@@ -1,0 +1,92 @@
+[package]
+name = "konejo"
+version = "0.1.0"
+description = "Konejo – AI Meeting Assistant local-first"
+authors = ["Konejo"]
+edition = "2021"
+
+[lib]
+name = "konejo_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "konejo"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# ── Tauri core ──────────────────────────────────────────────────────────────
+tauri = { version = "2", features = ["unstable"] }
+tauri-plugin-store    = "2"
+tauri-plugin-shell    = "2"
+tauri-plugin-dialog   = "2"
+tauri-plugin-fs       = "2"
+tauri-plugin-log      = "2"
+
+# ── LLM – llama.cpp bindings (streaming, non-CUDA backends) ─────────────────
+# https://github.com/utilityai/llama-cpp-rs  (mejor soporte streaming + vulkan)
+llama-cpp-2 = { version = "0.4", default-features = false, features = [] }
+
+# ── Transcripción – whisper.cpp bindings ─────────────────────────────────────
+# Sin OpenVINO por defecto (activar via feature flag: --features openvino)
+whisper-rs = { version = "0.12", default-features = false, features = [] }
+
+# ── Embeddings – fastembed con ONNX Runtime ──────────────────────────────────
+fastembed = { version = "4", default-features = false, features = ["ort-download-binaries"] }
+
+# ── Base de datos ─────────────────────────────────────────────────────────────
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# ── Audio ─────────────────────────────────────────────────────────────────────
+cpal  = "0.15"
+hound = "3.5"
+
+# ── HTTP / downloads ──────────────────────────────────────────────────────────
+reqwest      = { version = "0.12", features = ["stream", "json", "rustls-tls"], default-features = false }
+futures-util = "0.3"
+
+# ── Async ─────────────────────────────────────────────────────────────────────
+tokio = { version = "1", features = ["full"] }
+
+# ── Serde / JSON ──────────────────────────────────────────────────────────────
+serde      = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# ── Utilidades ────────────────────────────────────────────────────────────────
+uuid      = { version = "1", features = ["v4"] }
+chrono    = { version = "0.4", features = ["serde"] }
+anyhow    = "1"
+thiserror = "1"
+tracing   = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# ── Exportación ───────────────────────────────────────────────────────────────
+docx-rs    = "0.4"
+printpdf   = "0.7"
+
+# ── Canales entre hilos ───────────────────────────────────────────────────────
+crossbeam-channel = "0.5"
+
+# ── Paths del sistema ─────────────────────────────────────────────────────────
+dirs = "5"
+
+[profile.release]
+opt-level     = 3
+lto           = "thin"
+codegen-units = 1
+panic         = "abort"
+strip         = true
+
+[profile.dev]
+opt-level = 1   # algo de optimización para inferencia incluso en dev
+
+[features]
+default = []
+# Vulkan – Intel Arc iGPU: cargo build --release --features vulkan
+# Requiere Vulkan SDK: https://vulkan.lunarg.com/sdk/home#windows
+vulkan = ["llama-cpp-2/vulkan"]
+# OpenVINO – Whisper acelerado en Intel: cargo build --release --features openvino
+# Requiere OpenVINO SDK: https://storage.openvinotoolkit.org/
+openvino = ["whisper-rs/whisper-cpp-openvino"]
