@@ -10,18 +10,14 @@ mod transcription;
 
 use commands::{chat::*, recording::*, settings::*, workspace::*};
 use state::AppState;
+use tauri::Manager;
 
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Logger
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("konejo=info,warn")),
-        )
-        .init();
-
+    // El logging es manejado por tauri-plugin-log (inicializado más abajo).
+    // NO llamar a tracing_subscriber::fmt().init() aquí — provocaría
+    // "attempted to set a logger after the logging system was already initialized".
     tracing::info!("Iniciando Konejo…");
 
     tauri::Builder::default()

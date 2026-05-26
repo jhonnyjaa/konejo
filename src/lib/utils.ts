@@ -1,22 +1,5 @@
-// Implementación de cn sin dependencias extra
-type ClassValue = string | boolean | null | undefined | Record<string, boolean>;
-
-export function cn(...inputs: ClassValue[]): string {
-  return inputs
-    .flat()
-    .filter(Boolean)
-    .map((x) => {
-      if (typeof x === "string") return x;
-      if (typeof x === "object" && x !== null) {
-        return Object.entries(x as Record<string, boolean>)
-          .filter(([, v]) => Boolean(v))
-          .map(([k]) => k)
-          .join(" ");
-      }
-      return "";
-    })
-    .filter(Boolean)
-    .join(" ");
+export function cn(...classes: (string | boolean | null | undefined)[]): string {
+  return classes.filter(Boolean).join(" ");
 }
 
 export function formatDuration(seconds: number | null): string {
@@ -25,52 +8,45 @@ export function formatDuration(seconds: number | null): string {
   const s = Math.floor(seconds % 60);
   if (m >= 60) {
     const h = Math.floor(m / 60);
-    const rm = m % 60;
-    return `${h}h ${rm}m`;
+    return `${h}h ${m % 60}m`;
   }
-  return `${m}m ${s}s`;
+  return `${m}m ${s > 0 ? `${s}s` : ""}`.trim();
 }
 
 export function formatDate(timestamp: number): string {
   const date = new Date(timestamp * 1000);
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffDays = Math.floor(diffMs / 86400000);
-
-  if (diffDays === 0) {
-    return `Hoy, ${date.toLocaleTimeString("es", { hour: "2-digit", minute: "2-digit" })}`;
-  }
-  if (diffDays === 1) {
-    return `Ayer, ${date.toLocaleTimeString("es", { hour: "2-digit", minute: "2-digit" })}`;
-  }
-  if (diffDays < 7) {
-    return date.toLocaleDateString("es", { weekday: "long", hour: "2-digit", minute: "2-digit" });
-  }
+  const now  = new Date();
+  const diffDays = Math.floor((now.getTime() - date.getTime()) / 86_400_000);
+  if (diffDays === 0)
+    return `Hoy ${date.toLocaleTimeString("es", { hour: "2-digit", minute: "2-digit" })}`;
+  if (diffDays === 1)
+    return `Ayer ${date.toLocaleTimeString("es", { hour: "2-digit", minute: "2-digit" })}`;
+  if (diffDays < 7)
+    return date.toLocaleDateString("es", { weekday: "long" });
   return date.toLocaleDateString("es", { day: "2-digit", month: "short", year: "numeric" });
 }
 
-export function formatTimestamp(seconds: number): string {
-  const m = Math.floor(seconds / 60);
-  const s = Math.floor(seconds % 60);
-  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+export function formatRelativeDate(timestamp: number): string {
+  const date = new Date(timestamp * 1000);
+  const now  = new Date();
+  const diffDays = Math.floor((now.getTime() - date.getTime()) / 86_400_000);
+  if (diffDays === 0) return "Hoy";
+  if (diffDays === 1) return "Ayer";
+  if (diffDays < 7)   return "Esta semana";
+  return "Más antiguo";
 }
 
-export function clampText(text: string, maxLength: number): string {
-  if (text.length <= maxLength) return text;
-  return text.slice(0, maxLength) + "…";
+export function groupByDate<T>(items: T[], getDate: (i: T) => number): Record<string, T[]> {
+  const groups: Record<string, T[]> = {};
+  for (const item of items) {
+    const key = formatRelativeDate(getDate(item));
+    (groups[key] ??= []).push(item);
+  }
+  return groups;
 }
 
-export function generateId(): string {
-  return crypto.randomUUID();
+export function clamp(n: number, min: number, max: number) {
+  return Math.min(Math.max(n, min), max);
 }
 
-// Estima número de tokens (rough: palabras / 0.75)
-export function estimateTokens(text: string): number {
-  const words = text.trim().split(/\s+/).length;
-  return Math.ceil(words / 0.75);
-}
-
-// Tipos de archivo de audio/video soportados
-export const SUPPORTED_AUDIO_EXTS = [".wav", ".mp3", ".m4a", ".ogg", ".flac"];
-export const SUPPORTED_VIDEO_EXTS = [".mp4", ".mkv", ".mov", ".avi", ".webm"];
-export const SUPPORTED_EXTS       = [...SUPPORTED_AUDIO_EXTS, ...SUPPORTED_VIDEO_EXTS];
+export const SUPPORTED_EXTS = [".mp3", ".wav", ".m4a", ".ogg", ".flac", ".mp4", ".mkv", ".mov", ".avi", ".webm"];

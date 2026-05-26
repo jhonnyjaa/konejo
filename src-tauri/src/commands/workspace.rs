@@ -220,9 +220,9 @@ pub fn run_processing_pipeline(
         } else {
             let texts: Vec<String> = chunks.iter().map(|c| c.text.clone()).collect();
 
-            // Embeddings
-            let emb_guard = embeddings.lock().unwrap();
-            match emb_guard.as_ref() {
+            // Embeddings — fastembed 5.x requiere &mut TextEmbedding
+            let mut emb_guard = embeddings.lock().unwrap();
+            match emb_guard.as_mut() {
                 None => {
                     drop(emb_guard);
                     tracing::warn!("Modelo de embeddings no cargado, saltando indexación");
@@ -358,24 +358,58 @@ fn export_docx(doc: &db::Document, path: &str) -> Result<(), AppError> {
 }
 
 fn export_pdf(doc: &db::Document, path: &str) -> Result<(), AppError> {
-    use printpdf::*;
+    use printpdf::{
+        BuiltinFont, Mm, Op, PdfDocument, PdfFontHandle, PdfPage,
+        PdfSaveOptions, Point, Pt, TextItem,
+    };
 
-    let (doc_pdf, page1, layer1) = PdfDocument::new(&doc.title, Mm(210.0), Mm(297.0), "Layer 1");
-    let current_layer = doc_pdf.get_page(page1).get_layer(layer1);
-    let font = doc_pdf.add_builtin_font(BuiltinFont::Helvetica)
-        .map_err(|e| AppError::Export(e.to_string()))?;
+    // printpdf 0.9 usa un modelo basado en operaciones (ops):
+    // 1. Construimos las ops para la página
+    // 2. Creamos PdfPage con esas ops
+    // 3. Lo añadimos al PdfDocument y guardamos como Vec<u8>
+    //
+    // Conversión de unidades: 1 mm = 72 / 25.4 ≈ 2.8346 pt
+    const MM_TO_PT: f32 = 72.0 / 25.4;
 
-    let mut y = 270.0f64;
-    let line_height = 5.5;
-    let margin_left = 15.0;
+    let font_handle = PdfFontHandle::Builtin(BuiltinFont::Helvetica);
+    let font_size_pt = Pt(10.0_f32);
+    let line_height_pt = 5.5_f32 * MM_TO_PT; // 5.5 mm → pt
+    let margin_left_pt = 15.0_f32 * MM_TO_PT;
+    let start_y_pt = 270.0_f32 * MM_TO_PT;
+
+    let mut ops: Vec<Op> = vec![
+        Op::StartTextSection,
+        Op::SetFont { font: font_handle.clone(), size: font_size_pt },
+        Op::SetLineHeight { lh: Pt(line_height_pt) },
+    ];
+
+    let mut y_pt = start_y_pt;
+    let min_y_pt = 20.0_f32 * MM_TO_PT;
 
     for line in doc.content.lines() {
-        if y < 20.0 { break; } // TODO: paginación
-        current_layer.use_text(line, 10.0, Mm(margin_left), Mm(y), &font);
-        y -= line_height;
+        if y_pt < min_y_pt { break; } // TODO: paginación
+        ops.push(Op::SetTextCursor {
+            pos: Point::new(Mm(margin_left_pt / MM_TO_PT), Mm(y_pt / MM_TO_PT)),
+        });
+        ops.push(Op::ShowText {
+            items: vec![TextItem::Text(line.to_string())],
+        });
+        y_pt -= line_height_pt;
     }
 
-    let bytes = doc_pdf.save_to_bytes().map_err(|e| AppError::Export(e.to_string()))?;
+    ops.push(Op::EndTextSection);
+
+    let page = PdfPage::new(Mm(210.0_f32), Mm(297.0_f32), ops);
+    let mut pdf_doc = PdfDocument::new(&doc.title);
+    pdf_doc.with_pages(vec![page]);
+
+    let mut warnings = Vec::new();
+    let bytes = pdf_doc.save(&PdfSaveOptions::default(), &mut warnings);
+
+    if !warnings.is_empty() {
+        tracing::warn!("PDF warnings: {:?}", warnings);
+    }
+
     std::fs::write(path, bytes)?;
     Ok(())
 }
@@ -403,9 +437,13 @@ pub async fn check_models_exist(state: State<'_, AppState>) -> Result<serde_json
 pub async fn initialize_models(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    let db = state.db.lock().unwrap();
-    let settings = db::get_settings(&db).map_err(|e| e.to_string())?;
-    drop(db);
+    // Scope the MutexGuard tightly so it's NOT held across any `.await` point.
+    // (MutexGuard<Connection> is !Send; futures must be Send for Tauri async commands.)
+    let settings = {
+        let db = state.db.lock().unwrap();
+        db::get_settings(&db).map_err(|e| e.to_string())?
+        // db dropped here
+    };
 
     let mut errors: Vec<String> = Vec::new();
     let mut loaded = serde_json::json!({ "whisper": false, "llm": false, "embeddings": false });

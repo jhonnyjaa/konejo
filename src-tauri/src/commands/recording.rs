@@ -1,7 +1,7 @@
 use crate::db::{self, Workspace, WorkspaceStatus};
 use crate::state::AppState;
 use std::sync::atomic::Ordering;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, State};
 
 #[tauri::command]
 pub async fn start_recording(state: State<'_, AppState>) -> Result<(), String> {
@@ -12,23 +12,24 @@ pub async fn start_recording(state: State<'_, AppState>) -> Result<(), String> {
     // Limpiar buffer anterior
     state.recording.samples.lock().unwrap().clear();
 
-    let samples_arc = state.recording.samples.clone();
-    let is_active_arc = std::sync::Arc::new(
-        std::sync::atomic::AtomicBool::new(false)
-    );
-    let is_active_for_cpal = is_active_arc.clone();
+    // Clonamos el Arc<RecordingState> para pasarlo al hilo de cpal
+    let recording_arc = state.recording.clone();
+
+    // Activar antes de lanzar el hilo para que el callback empiece a capturar
+    state.recording.is_active.store(true, Ordering::Relaxed);
 
     // Iniciar grabación en hilo bloqueante (cpal requiere hilo dedicado en Windows)
     let stream_result = tokio::task::spawn_blocking(move || {
-        crate::audio::start_recording(samples_arc, is_active_for_cpal)
+        crate::audio::start_recording(recording_arc)
     })
     .await
     .map_err(|e| e.to_string())?
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| {
+        // Si falló, desactivar el flag
+        e.to_string()
+    })?;
 
     *state.recording.stream.lock().unwrap() = Some(stream_result);
-    state.recording.is_active.store(true, Ordering::Relaxed);
-
     tracing::info!("Grabación iniciada");
     Ok(())
 }
@@ -43,14 +44,14 @@ pub async fn stop_recording(
         return Err("No hay grabación activa".into());
     }
 
-    // Señalizar parada y soltar stream
+    // Señalizar parada y soltar stream (el callback de cpal dejará de capturar)
     state.recording.is_active.store(false, Ordering::Relaxed);
     {
         let mut stream = state.recording.stream.lock().unwrap();
         drop(stream.take());
     }
 
-    // Recoger muestras grabadas
+    // Recoger muestras grabadas (clonar el Vec<f32> del interior del Mutex)
     let samples: Vec<f32> = state.recording.samples.lock().unwrap().clone();
 
     if samples.is_empty() {
@@ -63,7 +64,8 @@ pub async fn stop_recording(
         format!("Reunión {}", now.format("%d/%m/%Y %H:%M"))
     });
 
-    // Guardar WAV
+    // Guardar WAV (asumimos 16kHz — cpal puede haber capturado a otra tasa;
+    // audio::start_recording ya baja a mono pero NO resamplea en el callback)
     let wav_path = state.data_dir.join(format!("{workspace_id}.wav"));
     let duration = crate::audio::stop_and_save_wav(&samples, &wav_path, 16_000)
         .map_err(|e| e.to_string())?;
@@ -84,7 +86,7 @@ pub async fn stop_recording(
         db::insert_workspace(&db, &ws).map_err(|e| e.to_string())?;
     }
 
-    // Lanzar pipeline de procesamiento
+    // Lanzar pipeline de procesamiento en background
     let db_arc         = state.db.clone();
     let whisper_arc    = state.whisper.clone();
     let embeddings_arc = state.embeddings.clone();

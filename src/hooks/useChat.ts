@@ -1,125 +1,110 @@
-import { useCallback, useEffect } from "react";
-import { useChatStore } from "@/store/chatStore";
-import {
-  getConversations, createConversation, getMessages,
-  sendChatMessage, onTokenStream, onDocumentCreated,
-} from "@/lib/tauri";
+import { useCallback, useEffect, useRef } from "react";
 import { useWorkspaceStore } from "@/store/workspaceStore";
-import type { Conversation, Document } from "@/types";
+import {
+  getConversations, createConversation,
+  getMessages, sendChatMessage, onTokenStream,
+} from "@/lib/tauri";
+import type { Message } from "@/types";
 
 export function useChat(workspaceId: string | null) {
-  const store = useChatStore();
-  const addDocument = useWorkspaceStore((s) => s.addDocument);
+  const store = useWorkspaceStore();
+  const sendingRef = useRef(false);
 
-  // Suscripción a eventos de streaming
-  useEffect(() => {
-    let unlistenToken: (() => void) | null = null;
-    let unlistenDoc:   (() => void) | null = null;
+  const conversations        = store.conversations;
+  const currentConversationId = store.currentConversationId;
+  const messages              = currentConversationId ? (store.messages[currentConversationId] ?? []) : [];
+  const isSending             = store.activeStreamId !== null;
 
-    onTokenStream((e) => {
-      const { message_id, token, done } = e.payload;
-      if (done) {
-        store.finishStream(message_id);
-      } else {
-        // Iniciar stream si es el primer token
-        if (!store.streamingMessages[message_id]) {
-          store.startStream(message_id);
-        }
-        store.appendToken(message_id, token);
-      }
-    }).then((fn) => { unlistenToken = fn; });
-
-    onDocumentCreated((e) => {
-      addDocument(e.payload as Document);
-    }).then((fn) => { unlistenDoc = fn; });
-
-    return () => {
-      unlistenToken?.();
-      unlistenDoc?.();
-    };
-  }, []);
-
+  // Load conversations for this workspace
   const loadConversations = useCallback(async () => {
     if (!workspaceId) return;
-    try {
-      const convs = await getConversations(workspaceId);
-      store.setConversations(convs);
-
-      // Auto-seleccionar la primera conversación o crear una
-      if (convs.length > 0) {
-        await selectConversation(convs[0].id);
-      } else {
-        await newConversation();
+    const cs = await getConversations(workspaceId);
+    store.setConversations(cs);
+    if (cs.length > 0) {
+      const first = cs[0];
+      store.setCurrentConversationId(first.id);
+      if (!store.messages[first.id]) {
+        const msgs = await getMessages(first.id);
+        store.setMessages(first.id, msgs);
       }
-    } catch (err) {
-      console.error("Error cargando conversaciones:", err);
     }
   }, [workspaceId]);
 
-  const selectConversation = useCallback(async (conversationId: string) => {
-    store.setCurrentConversation(conversationId);
-    try {
-      const msgs = await getMessages(conversationId);
-      store.setMessages(msgs);
-    } catch (err) {
-      console.error("Error cargando mensajes:", err);
+  const selectConversation = useCallback(async (id: string) => {
+    store.setCurrentConversationId(id);
+    if (!store.messages[id]) {
+      const msgs = await getMessages(id);
+      store.setMessages(id, msgs);
     }
   }, []);
 
   const newConversation = useCallback(async () => {
-    if (!workspaceId) return null;
-    try {
-      const conv = await createConversation(workspaceId);
-      store.addConversation(conv);
-      store.setCurrentConversation(conv.id);
-      store.setMessages([]);
-      return conv;
-    } catch (err) {
-      console.error("Error creando conversación:", err);
-      return null;
-    }
+    if (!workspaceId) return;
+    const conv = await createConversation(workspaceId);
+    store.addConversation(conv);
+    store.setCurrentConversationId(conv.id);
+    store.setMessages(conv.id, []);
+  }, [workspaceId]);
+
+  // Token streaming subscription (per-workspace)
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    onTokenStream((e) => {
+      const { message_id, token, done } = e.payload;
+      const cid = store.currentConversationId;
+      if (!cid) return;
+      if (done) {
+        store.updateMessage(cid, message_id, { isStreaming: false });
+        store.setActiveStreamId(null);
+        sendingRef.current = false;
+      } else {
+        store.appendToken(cid, message_id, token);
+      }
+    }).then((fn) => { unlisten = fn; });
+    return () => { unlisten?.(); };
   }, [workspaceId]);
 
   const sendMessage = useCallback(async (content: string) => {
-    if (!workspaceId || !store.currentConversationId || store.isSending) return;
-
     const trimmed = content.trim();
-    if (!trimmed) return;
+    if (!trimmed || !workspaceId || !currentConversationId || sendingRef.current) return;
+    sendingRef.current = true;
 
-    store.setSending(true);
-
-    // Añadir mensaje del usuario optimísticamente
-    const userMsg = {
-      id: crypto.randomUUID(),
-      conversation_id: store.currentConversationId,
+    // Optimistic user message
+    const userMsg: Message = {
+      id: `u-${Date.now()}`,
+      conversation_id: currentConversationId,
       workspace_id: workspaceId,
-      role: "user" as const,
+      role: "user",
       content: trimmed,
       created_at: Date.now() / 1000,
     };
-    store.addMessage(userMsg);
+    store.appendMessage(currentConversationId, userMsg);
 
     try {
-      // El messageId del asistente llega como retorno
-      const assistantMessageId = await sendChatMessage(
-        workspaceId,
-        store.currentConversationId,
-        trimmed
-      );
-      // Iniciar stream inmediatamente
-      store.startStream(assistantMessageId);
+      const msgId = await sendChatMessage(workspaceId, currentConversationId, trimmed);
+      const aiMsg: Message = {
+        id: msgId,
+        conversation_id: currentConversationId,
+        workspace_id: workspaceId,
+        role: "assistant",
+        content: "",
+        created_at: Date.now() / 1000,
+        isStreaming: true,
+      };
+      store.appendMessage(currentConversationId, aiMsg);
+      store.setActiveStreamId(msgId);
     } catch (err) {
-      console.error("Error enviando mensaje:", err);
-      store.setSending(false);
+      console.error("sendMessage error:", err);
+      sendingRef.current = false;
     }
-  }, [workspaceId, store.currentConversationId, store.isSending]);
+  }, [workspaceId, currentConversationId]);
 
   return {
-    conversations:          store.conversations,
-    currentConversationId:  store.currentConversationId,
-    messages:               store.messages,
-    isSending:              store.isSending,
-    activeStreamId:         store.activeStreamId,
+    conversations,
+    currentConversationId,
+    messages,
+    isSending,
+    activeStreamId: store.activeStreamId,
     loadConversations,
     selectConversation,
     newConversation,

@@ -14,28 +14,34 @@ pub fn retrieve(
     top_k: usize,
 ) -> AppResult<Vec<Chunk>> {
     // 1. Generar embedding del query
-    let emb_guard = state.embeddings.lock().unwrap();
-    let emb_model = emb_guard
-        .as_ref()
-        .ok_or_else(|| AppError::ModelNotLoaded("Embeddings no cargados".into()))?;
+    // fastembed 5.x requiere &mut — tomamos lock mutable
+    let query_vec = {
+        let mut emb_guard = state.embeddings.lock().unwrap();
+        let emb_model = emb_guard
+            .as_mut()
+            .ok_or_else(|| AppError::ModelNotLoaded("Embeddings no cargados".into()))?;
 
-    let query_vec = crate::embeddings::embed_query(emb_model, query)?;
-    drop(emb_guard);
+        crate::embeddings::embed_query(emb_model, query)?
+    };
 
     // 2. Cargar todos los chunks del workspace con sus embeddings
-    let db = state.db.lock().unwrap();
-    let all_chunks = crate::db::get_chunks_with_embeddings(&db, workspace_id)
-        .map_err(AppError::Database)?;
-    drop(db);
+    let all_chunks = {
+        let db = state.db.lock().unwrap();
+        crate::db::get_chunks_with_embeddings(&db, workspace_id)
+            .map_err(AppError::Database)?
+    };
 
-    // 3. Calcular similitud coseno con cada chunk
+    // 3. Calcular similitud coseno con cada chunk.
+    //    Patrón borrow-safe: calculamos el score mientras el borrow de chunk.embedding
+    //    está activo, lo devolvemos con ? si no hay embedding, y sólo entonces
+    //    movemos chunk a la tupla.
     let mut scored: Vec<(f32, Chunk)> = all_chunks
         .into_iter()
         .filter_map(|chunk| {
-            chunk.embedding.as_ref().map(|emb| {
-                let score = cosine_similarity(&query_vec, emb);
-                (score, chunk)
-            })
+            let score = chunk.embedding.as_ref().map(|emb| {
+                cosine_similarity(&query_vec, emb)
+            })?; // Si embedding es None, filter_map descarta este chunk
+            Some((score, chunk))
         })
         .collect();
 
@@ -73,13 +79,14 @@ pub fn index_workspace(
 
     // 2. Generar embeddings en batch
     let texts: Vec<String> = chunks.iter().map(|c| c.text.clone()).collect();
-    let emb_guard = state.embeddings.lock().unwrap();
-    let emb_model = emb_guard
-        .as_ref()
-        .ok_or_else(|| AppError::ModelNotLoaded("Embeddings no cargados".into()))?;
+    let embeddings = {
+        let mut emb_guard = state.embeddings.lock().unwrap();
+        let emb_model = emb_guard
+            .as_mut()
+            .ok_or_else(|| AppError::ModelNotLoaded("Embeddings no cargados".into()))?;
 
-    let embeddings = crate::embeddings::embed_passages(emb_model, &texts)?;
-    drop(emb_guard);
+        crate::embeddings::embed_passages(emb_model, &texts)?
+    };
 
     on_progress(0.7);
 
@@ -89,11 +96,12 @@ pub fn index_workspace(
     }
 
     // 4. Persistir en SQLite
-    let db = state.db.lock().unwrap();
-    for chunk in &chunks {
-        crate::db::insert_chunk(&db, chunk).map_err(AppError::Database)?;
+    {
+        let db = state.db.lock().unwrap();
+        for chunk in &chunks {
+            crate::db::insert_chunk(&db, chunk).map_err(AppError::Database)?;
+        }
     }
-    drop(db);
 
     on_progress(1.0);
     tracing::info!("Indexación completada: {} chunks", chunks.len());

@@ -1,13 +1,13 @@
 use crate::error::{AppError, AppResult};
+use crate::state::RecordingState;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
+use std::sync::{Arc, atomic::Ordering};
 use std::path::Path;
 
-/// Inicia grabación de micrófono.
+/// Inicia grabación de micrófono usando el RecordingState compartido.
 /// Devuelve el Stream activo que debe mantenerse vivo mientras se graba.
 pub fn start_recording(
-    samples_buf: Arc<Mutex<Vec<f32>>>,
-    is_active: Arc<AtomicBool>,
+    recording: Arc<RecordingState>,
 ) -> AppResult<cpal::Stream> {
     let host = cpal::default_host();
     let device = host
@@ -18,20 +18,20 @@ pub fn start_recording(
 
     // Preferimos 16kHz mono para whisper.cpp
     let config = find_input_config(&device)?;
-    let sample_rate = config.sample_rate().0;
+    // En cpal 0.17, SampleRate es un alias de tipo para u32
+    let sample_rate = config.sample_rate();
     let channels = config.channels() as usize;
 
     tracing::info!("Config audio: {}Hz, {} canales", sample_rate, channels);
 
-    let buf_clone = samples_buf.clone();
-    let active_clone = is_active.clone();
+    let rec_clone = recording.clone();
 
     let stream = device.build_input_stream(
         &config.into(),
         move |data: &[f32], _: &cpal::InputCallbackInfo| {
-            if !active_clone.load(Ordering::Relaxed) { return; }
-            let mut buf = buf_clone.lock().unwrap();
-            // Downmix a mono si es necesario + resample simple (acumulación)
+            if !rec_clone.is_active.load(Ordering::Relaxed) { return; }
+            let mut buf = rec_clone.samples.lock().unwrap();
+            // Downmix a mono si es necesario
             for frame in data.chunks(channels) {
                 let mono = frame.iter().sum::<f32>() / channels as f32;
                 buf.push(mono);
@@ -42,7 +42,6 @@ pub fn start_recording(
     ).map_err(|e| AppError::Audio(e.to_string()))?;
 
     stream.play().map_err(|e| AppError::Audio(e.to_string()))?;
-    is_active.store(true, Ordering::Relaxed);
     tracing::info!("Grabación iniciada");
     Ok(stream)
 }
@@ -161,17 +160,18 @@ fn find_input_config(device: &cpal::Device) -> AppResult<cpal::SupportedStreamCo
         .map_err(|e| AppError::Audio(e.to_string()))?
         .collect();
 
-    // Preferimos 16kHz mono
+    // Preferimos 16kHz mono; en cpal 0.17 max_sample_rate() ya devuelve u32
     configs.sort_by_key(|c| {
-        let rate_diff = (c.max_sample_rate().0 as i64 - 16_000).abs();
+        let rate_diff = (c.max_sample_rate() as i64 - 16_000).abs();
         let ch_diff   = (c.channels() as i64 - 1).abs();
         rate_diff + ch_diff * 100_000
     });
 
     configs.into_iter().next()
         .map(|c| {
-            let rate = c.max_sample_rate().0.min(48_000).max(16_000);
-            c.with_sample_rate(cpal::SampleRate(rate))
+            // SampleRate = u32 en cpal 0.17, se pasa directamente
+            let rate = c.max_sample_rate().min(48_000).max(16_000);
+            c.with_sample_rate(rate)
         })
         .ok_or_else(|| AppError::Audio("No hay configuraciones de entrada soportadas".into()))
 }

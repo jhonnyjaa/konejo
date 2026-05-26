@@ -53,9 +53,6 @@ pub fn transcribe(
     params.set_token_timestamps(false); // más rápido
     params.set_no_context(true);
 
-    // VAD para ignorar silencio (disponible en whisper-rs >= 0.12)
-    // params.set_no_speech_thold(0.6);  // umbral de probabilidad de silencio
-
     // Callback de progreso
     let counter = progress_counter.clone();
     params.set_progress_callback_safe(move |p| {
@@ -70,34 +67,57 @@ pub fn transcribe(
 
     progress_counter.store(100, Ordering::Relaxed);
 
-    let n_segments = state.full_n_segments()
-        .map_err(|e| AppError::Transcription(e.to_string()))?;
+    // En whisper-rs 0.16, full_n_segments() devuelve c_int (i32) directamente
+    let n_segments = state.full_n_segments();
+    let audio_duration = samples.len() as f64 / 16_000.0;
 
     let mut segments = Vec::new();
     let mut full_text = String::new();
 
     for i in 0..n_segments {
-        let text = state.full_get_segment_text(i)
-            .map_err(|e| AppError::Transcription(e.to_string()))?;
-        let t0 = state.full_get_segment_t0(i)
-            .map_err(|e| AppError::Transcription(e.to_string()))?;
-        let t1 = state.full_get_segment_t1(i)
-            .map_err(|e| AppError::Transcription(e.to_string()))?;
+        // En whisper-rs 0.16, los segmentos se acceden con get_segment(i)
+        // que devuelve Option<WhisperSegment<'_>>
+        let seg = match state.get_segment(i) {
+            Some(s) => s,
+            None => {
+                tracing::warn!("Segmento {i} fuera de rango");
+                continue;
+            }
+        };
 
+        // to_str_lossy reemplaza UTF-8 inválido con replacement char
+        let text = match seg.to_str_lossy() {
+            Ok(cow) => cow.to_string(),
+            Err(e) => {
+                tracing::warn!("Segmento {i} sin texto: {e}");
+                continue;
+            }
+        };
         let text = text.trim().to_string();
         if text.is_empty() { continue; }
+
+        // Timestamps en centisegundos (10ms = 1/100s)
+        let t0 = seg.start_timestamp();
+        let t1 = seg.end_timestamp();
+
+        let start_time = if t0 >= 0 {
+            t0 as f64 / 100.0
+        } else {
+            i as f64 * audio_duration / n_segments.max(1) as f64
+        };
+        let end_time = if t1 > 0 {
+            t1 as f64 / 100.0
+        } else {
+            (i + 1) as f64 * audio_duration / n_segments.max(1) as f64
+        };
 
         full_text.push_str(&text);
         full_text.push(' ');
 
-        segments.push(TranscriptSegment {
-            text,
-            start_time: t0 as f64 / 100.0, // whisper usa centisegundos
-            end_time:   t1 as f64 / 100.0,
-        });
+        segments.push(TranscriptSegment { text, start_time, end_time });
     }
 
-    let duration = segments.last().map(|s| s.end_time).unwrap_or(0.0);
+    let duration = segments.last().map(|s| s.end_time).unwrap_or(audio_duration);
 
     tracing::info!(
         "Transcripción completa: {} segmentos, {:.1}s, {} chars",

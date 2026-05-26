@@ -1,11 +1,11 @@
-// ── Tipos de dominio (espejo de los structs Rust) ─────────────────────────────
+// ── Domain types (mirrors Rust structs) ───────────────────────────────────────
 
 export type WorkspaceStatus = "processing" | "ready" | "error";
 
 export interface Workspace {
   id: string;
   name: string;
-  created_at: number; // Unix timestamp
+  created_at: number; // Unix timestamp (seconds)
   audio_path: string | null;
   transcript: string | null;
   duration_seconds: number | null;
@@ -29,9 +29,7 @@ export interface Message {
   role: MessageRole;
   content: string;
   created_at: number;
-  /** Solo en mensajes de asistente durante streaming */
   isStreaming?: boolean;
-  streamingContent?: string;
 }
 
 export interface Document {
@@ -67,13 +65,7 @@ export interface AppSettings {
   onboarding_complete: boolean;
 }
 
-// ── Eventos Tauri ─────────────────────────────────────────────────────────────
-
-export interface ProcessingEvent {
-  stage: ProcessingStage;
-  progress: number; // 0–1
-  message: string;
-}
+// ── Tauri events ──────────────────────────────────────────────────────────────
 
 export type ProcessingStage =
   | "prepare"
@@ -83,6 +75,12 @@ export type ProcessingStage =
   | "indexing"
   | "done";
 
+export interface ProcessingEvent {
+  stage: ProcessingStage;
+  progress: number; // 0–1
+  message: string;
+}
+
 export interface TokenEvent {
   message_id: string;
   token: string;
@@ -90,32 +88,52 @@ export interface TokenEvent {
   doc_type: DocumentType | null;
 }
 
-// ── UI State ──────────────────────────────────────────────────────────────────
+// ── UI ────────────────────────────────────────────────────────────────────────
 
 export type AppPage =
   | "onboarding"
   | "home"
+  | "workspaces"
   | "workspace"
-  | "processing"
   | "documents"
   | "prompts"
   | "settings";
 
-export interface SuggestedPrompt {
+// ── Prompt Library ────────────────────────────────────────────────────────────
+
+export type PromptCategory =
+  | "analysis"
+  | "document"
+  | "extraction"
+  | "communication"
+  | "custom";
+
+export interface Prompt {
   id: string;
-  label: string;
+  name: string;
+  description: string;
   prompt: string;
-  category: "documento" | "análisis" | "extracción";
-  icon: string;
+  tags: string[];
+  category: PromptCategory;
+  favorite: boolean;
+  created_at: number;
+  used_at?: number;
 }
 
-export const SUGGESTED_PROMPTS: SuggestedPrompt[] = [
-  { id: "1", label: "Resumen ejecutivo", prompt: "Genera un resumen ejecutivo de la reunión", category: "documento", icon: "📋" },
-  { id: "2", label: "Action items", prompt: "Lista todos los action items y tareas asignadas", category: "extracción", icon: "✅" },
-  { id: "3", label: "Acta formal", prompt: "Genera el acta formal de la reunión", category: "documento", icon: "📄" },
-  { id: "4", label: "Próximos pasos", prompt: "¿Cuáles son los próximos pasos acordados?", category: "extracción", icon: "🚀" },
-  { id: "5", label: "Riesgos", prompt: "Identifica los riesgos mencionados en la reunión", category: "análisis", icon: "⚠️" },
-  { id: "6", label: "Acuerdos", prompt: "Lista todos los acuerdos alcanzados", category: "extracción", icon: "🤝" },
-  { id: "7", label: "Correo seguimiento", prompt: "Redacta un correo de seguimiento post-reunión", category: "documento", icon: "✉️" },
-  { id: "8", label: "Timeline", prompt: "Crea un timeline de los eventos y decisiones de la reunión", category: "análisis", icon: "📅" },
-];
+// ── Recording ─────────────────────────────────────────────────────────────────
+
+export type RecordingState = "idle" | "recording" | "paused" | "stopped";
+
+// ── Model info ────────────────────────────────────────────────────────────────
+
+export interface ModelInfo {
+  id: string;
+  name: string;
+  type: "whisper" | "llm";
+  size_gb: number;
+  description: string;
+  url: string;
+  filename: string;
+  isInstalled: boolean;
+  isActive: boolean;
+}

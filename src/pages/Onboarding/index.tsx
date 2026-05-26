@@ -1,225 +1,207 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { CheckCircle, FolderOpen, ChevronRight, AlertTriangle } from "lucide-react";
+import { ChevronRight, CheckCircle, ArrowRight } from "lucide-react";
 import { useAppStore } from "@/store/appStore";
-import { checkModelsExist, initializeModels, markOnboardingComplete, getModelsDir } from "@/lib/tauri";
+import { markOnboardingComplete, MOCK_MODE } from "@/lib/tauri";
+import { cn } from "@/lib/utils";
 
-type Step = "welcome" | "whisper" | "llm" | "done";
+// ── Steps ─────────────────────────────────────────────────────────────────────
+
+const STEPS = [
+  {
+    emoji: "🐰",
+    title: "Welcome to Konejo",
+    subtitle: "Your local-first AI meeting assistant. Everything runs on your device — no cloud, no data leaks.",
+    features: [
+      { emoji: "🔒", text: "100% local — no data leaves your device" },
+      { emoji: "🎙️", text: "Automatic transcription with Whisper" },
+      { emoji: "🧠", text: "AI that understands your meetings" },
+      { emoji: "📄", text: "Generates editable documents instantly" },
+    ],
+  },
+  {
+    emoji: "🎙️",
+    title: "Transcription Engine",
+    subtitle: "Konejo uses Whisper to transcribe meetings with high accuracy — offline, no API key required.",
+    model: {
+      name: "Whisper ggml-small",
+      size: "~244 MB",
+      description: "High accuracy transcription in Spanish and English",
+      hint: "Download from Hugging Face and set the path in Settings → General.",
+      url: "https://huggingface.co/ggerganov/whisper.cpp",
+    },
+  },
+  {
+    emoji: "🧠",
+    title: "Language Model",
+    subtitle: "A local LLM analyses your meeting and generates intelligent, editable documents.",
+    model: {
+      name: "Phi-4 Mini Instruct Q4_K_M",
+      size: "~2.5 GB",
+      description: "Fast, high-quality reasoning for meeting analysis",
+      hint: "Download from Hugging Face and set the path in Settings → General.",
+      url: "https://huggingface.co/microsoft/Phi-4-mini-instruct-gguf",
+    },
+  },
+];
+
+// ── Component ─────────────────────────────────────────────────────────────────
 
 export function OnboardingPage() {
-  const [step, setStep] = useState<Step>("welcome");
-  const [modelsDir, setModelsDir] = useState("~/.konejo/models");
-  const [modelStatus, setModelStatus] = useState({ whisper: false, llm: false });
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const setPage               = useAppStore((s) => s.setPage);
   const setOnboardingComplete = useAppStore((s) => s.setOnboardingComplete);
-  const setPage = useAppStore((s) => s.setPage);
-  const setModelsLoaded = useAppStore((s) => s.setModelsLoaded);
 
-  useEffect(() => {
-    getModelsDir().then(setModelsDir).catch(() => {});
-    checkModelsExist().then((r) => setModelStatus({ whisper: r.whisper, llm: r.llm })).catch(() => {});
-  }, []);
+  const [step,    setStep]    = useState(0);
+  const [loading, setLoading] = useState(false);
 
+  const isLast = step === STEPS.length - 1;
+
+  // Complete onboarding — do NOT call initializeModels() here.
+  // Models are lazy-loaded when the user actually uses transcription / chat.
   const handleComplete = async () => {
-    setIsLoading(true);
-    setError(null);
+    setLoading(true);
     try {
-      const result = await initializeModels();
-      setModelsLoaded({
-        whisper: result.loaded.whisper ?? false,
-        llm: result.loaded.llm ?? false,
-        embeddings: result.loaded.embeddings ?? false,
-      });
       await markOnboardingComplete();
-      setOnboardingComplete(true);
-      setStep("done");
-      setTimeout(() => setPage("home"), 1500);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setIsLoading(false);
+    } catch (err) {
+      console.error("markOnboardingComplete error:", err);
+      // Don't block navigation — DB might not be ready in dev, or mock mode
     }
+    // Always navigate, even if the Tauri call fails
+    setOnboardingComplete(true);
+    setPage("home");
+    setLoading(false);
   };
 
+  const handleNext = () => {
+    if (isLast) { handleComplete(); return; }
+    setStep((s) => s + 1);
+  };
+
+  const s = STEPS[step];
+
   return (
-    <div className="fixed inset-0 bg-white flex items-center justify-center overflow-hidden">
-      {/* Fondo */}
-      <div className="absolute inset-0 pointer-events-none">
-        <div className="absolute -top-32 -left-32 w-96 h-96 bg-indigo-50 rounded-full blur-3xl opacity-60" />
-        <div className="absolute -bottom-32 -right-32 w-96 h-96 bg-violet-50 rounded-full blur-3xl opacity-60" />
-      </div>
+    <div className="h-screen flex items-center justify-center bg-white px-6">
+      <div className="w-full max-w-md">
 
-      <div className="relative w-full max-w-lg px-8">
-        <AnimatePresence mode="wait">
-          {step === "welcome" && (
+        {/* Progress dots */}
+        <div className="flex justify-center gap-2 mb-12">
+          {STEPS.map((_, i) => (
             <motion.div
-              key="welcome"
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -20 }}
-              className="text-center"
-            >
-              <motion.div
-                animate={{ y: [0, -8, 0] }}
-                transition={{ duration: 3, repeat: Infinity, ease: "easeInOut" }}
-                className="text-7xl mb-6 select-none"
-              >
-                🐰
-              </motion.div>
-              <h1 className="text-4xl font-bold text-slate-900 mb-3">Bienvenido a Konejo</h1>
-              <p className="text-slate-500 text-lg mb-2 leading-relaxed">
-                Tu asistente de reuniones completamente local.
-              </p>
-              <p className="text-slate-400 text-sm mb-10 leading-relaxed max-w-sm mx-auto">
-                Transcribe, indexa y consulta tus reuniones con IA.
-                Todo ocurre en tu dispositivo — sin internet, sin nube, sin compromisos de privacidad.
-              </p>
+              key={i}
+              animate={{ width: i === step ? 28 : 8, opacity: i <= step ? 1 : 0.25 }}
+              transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
+              className="h-2 rounded-full bg-violet-500"
+            />
+          ))}
+        </div>
 
-              <div className="flex flex-col gap-3 mb-8">
-                {[
-                  { icon: "🎙️", text: "Transcripción local con Whisper" },
-                  { icon: "🧠", text: "Inferencia con Phi-4-mini en tu CPU/iGPU" },
-                  { icon: "🔍", text: "Búsqueda semántica con embeddings multilingual" },
-                  { icon: "🔒", text: "100% privado — sin telemetría ni conexión a internet" },
-                ].map((f) => (
-                  <div key={f.text} className="flex items-center gap-3 text-left bg-slate-50 rounded-xl px-4 py-3">
-                    <span className="text-xl">{f.icon}</span>
-                    <span className="text-slate-700 text-sm font-medium">{f.text}</span>
-                  </div>
+        {/* Step content */}
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={step}
+            initial={{ opacity: 0, x: 24 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: -24 }}
+            transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
+          >
+            <div className="text-center mb-8">
+              <div className="text-5xl mb-5">{s.emoji}</div>
+              <h1 className="text-2xl font-bold text-slate-900 tracking-tight mb-2">{s.title}</h1>
+              <p className="text-slate-500 text-[14px] leading-relaxed max-w-sm mx-auto">{s.subtitle}</p>
+            </div>
+
+            {/* Step 0 — features */}
+            {step === 0 && s.features && (
+              <div className="space-y-2.5">
+                {s.features.map((f) => (
+                  <motion.div
+                    key={f.text}
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.05 + s.features!.indexOf(f) * 0.07 }}
+                    className="flex items-center gap-3 bg-slate-50 rounded-2xl px-4 py-3.5 border border-slate-100"
+                  >
+                    <span className="text-xl flex-shrink-0">{f.emoji}</span>
+                    <span className="text-[13px] text-slate-700 font-medium">{f.text}</span>
+                  </motion.div>
                 ))}
               </div>
+            )}
 
-              <button
-                onClick={() => setStep("whisper")}
-                className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold
-                           py-3.5 rounded-2xl transition-colors flex items-center justify-center gap-2"
-              >
-                Comenzar configuración
-                <ChevronRight size={18} />
-              </button>
-            </motion.div>
-          )}
+            {/* Steps 1 & 2 — model info */}
+            {s.model && (
+              <div className="bg-slate-50 rounded-2xl border border-slate-100 p-5">
+                <div className="flex items-start gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-violet-100 flex items-center justify-center flex-shrink-0 text-lg">
+                    {step === 1 ? "🎙️" : "🧠"}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold text-slate-800">{s.model.name}</p>
+                    <p className="text-xs text-violet-600 font-medium mt-0.5">{s.model.size}</p>
+                    <p className="text-xs text-slate-500 mt-1 leading-relaxed">{s.model.description}</p>
+                  </div>
+                </div>
 
-          {(step === "whisper" || step === "llm") && (
-            <motion.div
-              key={step}
-              initial={{ opacity: 0, x: 30 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -30 }}
-              className="text-center"
-            >
-              <div className="text-5xl mb-5">
-                {step === "whisper" ? "🎙️" : "🧠"}
+                <div className="mt-4 pt-4 border-t border-slate-200">
+                  <p className="text-xs text-slate-400 leading-relaxed mb-3">{s.model.hint}</p>
+                  <a
+                    href={s.model.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1.5 text-xs text-violet-600 font-medium
+                               hover:text-violet-700 transition-colors"
+                  >
+                    Ver en Hugging Face <ArrowRight size={11} />
+                  </a>
+                </div>
               </div>
-              <h2 className="text-2xl font-bold text-slate-900 mb-2">
-                {step === "whisper" ? "Modelo Whisper Small" : "Modelo Phi-4-mini"}
-              </h2>
-              <p className="text-slate-500 text-sm mb-6">
-                {step === "whisper"
-                  ? "Para transcripción de audio en español (244 MB)"
-                  : "Para inferencia LLM local (≈2.4 GB)"}
+            )}
+
+            {/* Skip note on model steps */}
+            {step > 0 && (
+              <p className="text-xs text-slate-400 text-center mt-4 leading-relaxed">
+                Puedes continuar sin los modelos y configurarlos después en{" "}
+                <span className="text-violet-500 font-medium">Settings</span>
               </p>
-
-              {/* Instrucción de ruta */}
-              <div className="bg-slate-900 rounded-xl p-4 mb-6 text-left">
-                <p className="text-slate-400 text-xs mb-2 font-mono">Coloca el archivo en:</p>
-                <p className="text-green-400 font-mono text-sm break-all">
-                  {modelsDir}\{step === "whisper" ? "ggml-small.bin" : "phi-4-mini-instruct-q4_k_m.gguf"}
-                </p>
-                <p className="text-slate-500 text-xs mt-3">
-                  {step === "whisper"
-                    ? "Descarga desde: huggingface.co/ggerganov/whisper.cpp"
-                    : "Descarga desde: huggingface.co/microsoft/Phi-4-mini-instruct-gguf"}
-                </p>
-              </div>
-
-              {/* Estado actual */}
-              <div className={`flex items-center gap-3 rounded-xl p-3 mb-6 ${
-                (step === "whisper" ? modelStatus.whisper : modelStatus.llm)
-                  ? "bg-green-50 border border-green-200"
-                  : "bg-amber-50 border border-amber-200"
-              }`}>
-                {(step === "whisper" ? modelStatus.whisper : modelStatus.llm) ? (
-                  <>
-                    <CheckCircle size={18} className="text-green-500 flex-shrink-0" />
-                    <span className="text-green-700 text-sm font-medium">Modelo encontrado ✓</span>
-                  </>
-                ) : (
-                  <>
-                    <AlertTriangle size={18} className="text-amber-500 flex-shrink-0" />
-                    <span className="text-amber-700 text-sm">
-                      Modelo no encontrado — puedes continuar y agregarlo después
-                    </span>
-                  </>
-                )}
-              </div>
-
-              <div className="flex gap-3">
-                <button
-                  onClick={() => setStep(step === "whisper" ? "welcome" : "whisper")}
-                  className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700
-                             font-medium py-3 rounded-xl transition-colors"
-                >
-                  Atrás
-                </button>
-                <button
-                  onClick={() => step === "whisper" ? setStep("llm") : handleComplete()}
-                  disabled={isLoading}
-                  className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold
-                             py-3 rounded-xl transition-colors flex items-center justify-center gap-2
-                             disabled:opacity-60"
-                >
-                  {isLoading ? (
-                    <span className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                  ) : step === "whisper" ? (
-                    <>Siguiente <ChevronRight size={16} /></>
-                  ) : (
-                    <>Empezar a usar Konejo <ChevronRight size={16} /></>
-                  )}
-                </button>
-              </div>
-
-              {error && (
-                <p className="text-red-500 text-xs mt-3 text-center">{error}</p>
-              )}
-            </motion.div>
-          )}
-
-          {step === "done" && (
-            <motion.div
-              key="done"
-              initial={{ opacity: 0, scale: 0.9 }}
-              animate={{ opacity: 1, scale: 1 }}
-              className="text-center"
-            >
-              <motion.div
-                initial={{ scale: 0 }}
-                animate={{ scale: 1 }}
-                transition={{ type: "spring", stiffness: 200, delay: 0.1 }}
-                className="text-6xl mb-4"
-              >
-                🎉
-              </motion.div>
-              <h2 className="text-2xl font-bold text-slate-900 mb-2">¡Todo listo!</h2>
-              <p className="text-slate-500">Iniciando Konejo…</p>
-            </motion.div>
-          )}
+            )}
+          </motion.div>
         </AnimatePresence>
 
-        {/* Indicador de paso */}
-        {step !== "done" && (
-          <div className="flex justify-center gap-2 mt-8">
-            {(["welcome", "whisper", "llm"] as Step[]).map((s) => (
-              <div
-                key={s}
-                className={`h-1.5 rounded-full transition-all duration-300 ${
-                  s === step ? "w-6 bg-indigo-500" : "w-2 bg-slate-200"
-                }`}
-              />
-            ))}
-          </div>
-        )}
+        {/* Navigation */}
+        <div className="flex items-center justify-between mt-10">
+          {step > 0 ? (
+            <button
+              onClick={() => setStep((s) => s - 1)}
+              className="text-sm text-slate-400 hover:text-slate-600 transition-colors font-medium"
+            >
+              ← Back
+            </button>
+          ) : (
+            <div />
+          )}
+
+          <motion.button
+            whileHover={{ scale: 1.02 }}
+            whileTap={{ scale: 0.97 }}
+            onClick={handleNext}
+            disabled={loading}
+            className={cn(
+              "flex items-center gap-2 px-6 py-3 rounded-2xl text-[13px] font-semibold",
+              "transition-all shadow-soft",
+              loading
+                ? "bg-violet-400 text-white cursor-not-allowed"
+                : "bg-violet-600 text-white hover:bg-violet-700"
+            )}
+          >
+            {loading ? (
+              <div className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+            ) : isLast ? (
+              <><CheckCircle size={15} /> Get started</>
+            ) : (
+              <>Continue <ChevronRight size={15} /></>
+            )}
+          </motion.button>
+        </div>
       </div>
     </div>
   );

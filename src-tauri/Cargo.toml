@@ -7,7 +7,10 @@ edition = "2021"
 
 [lib]
 name = "konejo_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# staticlib sólo es necesario para iOS mobile — en Windows desktop basta cdylib + rlib.
+# Quitar staticlib evita que el linker MSVC vea símbolos duplicados de ggml
+# (tanto whisper-rs-sys como llama-cpp-sys-2 compilan su propio ggml).
+crate-type = ["cdylib", "rlib"]
 
 [[bin]]
 name = "konejo"
@@ -25,26 +28,29 @@ tauri-plugin-dialog   = "2"
 tauri-plugin-fs       = "2"
 tauri-plugin-log      = "2"
 
-# ── LLM – llama.cpp bindings (streaming, non-CUDA backends) ─────────────────
-# https://github.com/utilityai/llama-cpp-rs  (mejor soporte streaming + vulkan)
-llama-cpp-2 = { version = "0.4", default-features = false, features = [] }
+# ── LLM – llama.cpp bindings ─────────────────────────────────────────────────
+# https://crates.io/crates/llama-cpp-2  versión real: 0.1.x
+llama-cpp-2 = { version = "0.1", default-features = false, features = ["openmp"] }
 
 # ── Transcripción – whisper.cpp bindings ─────────────────────────────────────
-# Sin OpenVINO por defecto (activar via feature flag: --features openvino)
-whisper-rs = { version = "0.12", default-features = false, features = [] }
+# https://crates.io/crates/whisper-rs  versión real: 0.16.x
+# Intel SYCL (para Intel Arc iGPU) disponible como feature "intel-sycl"
+whisper-rs = { version = "0.16", default-features = false, features = [] }
 
 # ── Embeddings – fastembed con ONNX Runtime ──────────────────────────────────
-fastembed = { version = "4", default-features = false, features = ["ort-download-binaries"] }
+# https://crates.io/crates/fastembed  versión real: 5.x
+# default features incluyen ort-download-binaries-native-tls
+fastembed = { version = "5", default-features = true }
 
 # ── Base de datos ─────────────────────────────────────────────────────────────
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.39", features = ["bundled"] }
 
 # ── Audio ─────────────────────────────────────────────────────────────────────
-cpal  = "0.15"
+cpal  = "0.17"
 hound = "3.5"
 
 # ── HTTP / downloads ──────────────────────────────────────────────────────────
-reqwest      = { version = "0.12", features = ["stream", "json", "rustls-tls"], default-features = false }
+reqwest      = { version = "0.13", features = ["stream", "json"] }
 futures-util = "0.3"
 
 # ── Async ─────────────────────────────────────────────────────────────────────
@@ -64,13 +70,13 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # ── Exportación ───────────────────────────────────────────────────────────────
 docx-rs    = "0.4"
-printpdf   = "0.7"
+printpdf   = "0.9"
 
 # ── Canales entre hilos ───────────────────────────────────────────────────────
 crossbeam-channel = "0.5"
 
 # ── Paths del sistema ─────────────────────────────────────────────────────────
-dirs = "5"
+dirs = "6"
 
 [profile.release]
 opt-level     = 3
@@ -80,13 +86,11 @@ panic         = "abort"
 strip         = true
 
 [profile.dev]
-opt-level = 1   # algo de optimización para inferencia incluso en dev
+opt-level = 1
 
 [features]
 default = []
 # Vulkan – Intel Arc iGPU: cargo build --release --features vulkan
-# Requiere Vulkan SDK: https://vulkan.lunarg.com/sdk/home#windows
 vulkan = ["llama-cpp-2/vulkan"]
-# OpenVINO – Whisper acelerado en Intel: cargo build --release --features openvino
-# Requiere OpenVINO SDK: https://storage.openvinotoolkit.org/
-openvino = ["whisper-rs/whisper-cpp-openvino"]
+# Intel SYCL – Whisper acelerado en Intel Arc: cargo build --release --features sycl
+sycl = ["whisper-rs/intel-sycl"]

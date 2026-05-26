@@ -109,7 +109,7 @@ pub async fn send_chat_message(
     let wid            = workspace_id.clone();
 
     // Recuperar settings
-    let (temperature, repeat_penalty, mut max_tokens, top_k) = {
+    let (temperature, repeat_penalty, _max_tokens, _top_k) = {
         let db = state.db.lock().unwrap();
         let s = db::get_settings(&db).unwrap_or_default();
         (s.llm_temperature, s.llm_repeat_penalty, s.llm_max_tokens, s.rag_top_k)
@@ -151,7 +151,7 @@ fn run_inference(
     message_id: &str,
     workspace_id: &str,
     query: &str,
-    conversation_id: &str,
+    _conversation_id: &str,
     db:  &std::sync::Arc<std::sync::Mutex<rusqlite::Connection>>,
     llm: &std::sync::Arc<std::sync::Mutex<Option<crate::state::LlmInstance>>>,
     emb: &std::sync::Arc<std::sync::Mutex<Option<fastembed::TextEmbedding>>>,
@@ -165,15 +165,15 @@ fn run_inference(
     // 1. RAG retrieval
     let chunks = {
         let query_vec = {
-            let emb_guard = emb.lock().unwrap();
-            match emb_guard.as_ref() {
+            // fastembed 5.x requiere &mut TextEmbedding → tomamos lock mutable
+            let mut emb_guard = emb.lock().unwrap();
+            match emb_guard.as_mut() {
                 None => {
                     tracing::warn!("Embeddings no cargados, usando transcripción completa");
                     vec![]
                 }
                 Some(model) => {
                     crate::embeddings::embed_query(model, query)
-                        .map(|v| v)
                         .unwrap_or_default()
                 }
             }
@@ -193,13 +193,15 @@ fn run_inference(
                 .unwrap_or_default();
             drop(db_g);
 
+            // Patrón borrow-safe: calculamos score mientras emb está prestado,
+            // luego lo devolvemos con ? si era None, y sólo entonces movemos chunk.
             let mut scored: Vec<(f32, crate::db::Chunk)> = all_chunks
                 .into_iter()
                 .filter_map(|chunk| {
-                    chunk.embedding.as_ref().map(|emb_vec| {
-                        let score = crate::embeddings::cosine_similarity(&query_vec, emb_vec);
-                        (score, chunk)
-                    })
+                    let score = chunk.embedding.as_ref().map(|emb_vec| {
+                        crate::embeddings::cosine_similarity(&query_vec, emb_vec)
+                    })?;
+                    Some((score, chunk))
                 })
                 .collect();
 

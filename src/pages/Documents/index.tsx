@@ -1,235 +1,152 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { FileText, Download, Trash2, Edit3, Copy, X, Save } from "lucide-react";
+import { Search, Download, Trash2, Copy, X } from "lucide-react";
+import { toast } from "sonner";
 import { useWorkspaceStore } from "@/store/workspaceStore";
-import { useAppStore } from "@/store/appStore";
-import { getDocuments, saveDocument, deleteDocument, exportDocument } from "@/lib/tauri";
-import { BlockNoteEditor } from "@/components/BlockNoteEditor";
+import { deleteDocument } from "@/lib/tauri";
+import { KonejoEditor } from "@/components/Editor";
 import { formatDate } from "@/lib/utils";
 import type { Document } from "@/types";
-import { cn } from "@/lib/utils";
-import { MOCK_MODE } from "@/lib/tauri";
+
+const DOC_LABELS: Record<string, string> = {
+  resumen_ejecutivo: "Resumen ejecutivo", acta: "Acta", minuta: "Minuta",
+  compromisos: "Compromisos", riesgos: "Riesgos", acuerdos: "Acuerdos",
+  proximos_pasos: "Próximos pasos", correo_seguimiento: "Correo seguimiento",
+  timeline: "Timeline", tareas: "Tareas", custom: "Documento",
+};
 
 export function DocumentsPage() {
-  const activeWorkspaceId = useAppStore((s) => s.activeWorkspaceId);
-  const documents  = useWorkspaceStore((s) => s.documents);
-  const setDocuments = useWorkspaceStore((s) => s.setDocuments);
-  const updateDoc  = useWorkspaceStore((s) => s.updateDocument);
-  const removeDoc  = useWorkspaceStore((s) => s.removeDocument);
+  const documents      = useWorkspaceStore((s) => s.documents);
+  const removeDocument = useWorkspaceStore((s) => s.removeDocument);
+  const [query, setQuery]   = useState("");
+  const [editing, setEditing] = useState<Document | null>(null);
 
-  const [selected, setSelected] = useState<Document | null>(null);
-  const [editContent, setEditContent] = useState("");
-  const [editTitle, setEditTitle] = useState("");
-  const [isSaving, setIsSaving] = useState(false);
-  const [isFocusMode, setIsFocusMode] = useState(false);
-
-  useEffect(() => {
-    if (!activeWorkspaceId) return;
-    getDocuments(activeWorkspaceId).then(setDocuments).catch(console.error);
-  }, [activeWorkspaceId]);
-
-  const openDocument = (doc: Document) => {
-    setSelected(doc);
-    setEditContent(doc.content);
-    setEditTitle(doc.title);
-  };
-
-  const handleSave = async () => {
-    if (!selected) return;
-    setIsSaving(true);
-    try {
-      await saveDocument(selected.id, editTitle, editContent);
-      updateDoc(selected.id, { title: editTitle, content: editContent });
-      setSelected((prev) => prev ? { ...prev, title: editTitle, content: editContent } : null);
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setIsSaving(false);
-    }
-  };
+  const filtered = documents.filter((d) =>
+    query === "" || d.title.toLowerCase().includes(query.toLowerCase()) ||
+    d.content.toLowerCase().includes(query.toLowerCase())
+  );
 
   const handleDelete = async (doc: Document) => {
     await deleteDocument(doc.id);
-    removeDoc(doc.id);
-    if (selected?.id === doc.id) setSelected(null);
+    removeDocument(doc.id);
+    toast.success("Documento eliminado");
+    if (editing?.id === doc.id) setEditing(null);
   };
 
-  const handleExport = async (format: "docx" | "pdf") => {
-    if (!selected || MOCK_MODE) {
-      alert("Exportación no disponible en modo mock");
-      return;
-    }
-    try {
-      const { save } = await import("@tauri-apps/plugin-dialog");
-      const path = await save({
-        defaultPath: `${selected.title}.${format}`,
-        filters: [{ name: format.toUpperCase(), extensions: [format] }],
-      });
-      if (path) await exportDocument(selected.id, format, path);
-    } catch (err) {
-      console.error(err);
-    }
+  const handleCopy = (doc: Document) => {
+    navigator.clipboard.writeText(doc.content);
+    toast.success("Copiado al portapapeles");
   };
 
-  if (!activeWorkspaceId) {
-    return (
-      <div className="flex items-center justify-center h-screen text-slate-400 text-sm">
-        Selecciona un workspace para ver sus documentos
-      </div>
-    );
-  }
+  const handleExport = (doc: Document) => {
+    const blob = new Blob([doc.content], { type: "text/markdown" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `${doc.title}.md`; a.click();
+    URL.revokeObjectURL(url);
+    toast.success("Exportado como Markdown");
+  };
 
   return (
-    <div className="flex h-screen bg-white pt-16">
-      {/* Lista de documentos */}
-      <div className={cn(
-        "border-r border-slate-100 flex flex-col bg-slate-25 transition-all",
-        isFocusMode ? "w-0 overflow-hidden" : "w-72"
-      )}>
-        <div className="p-4 border-b border-slate-100">
-          <h2 className="font-semibold text-slate-800">Documentos</h2>
-          <p className="text-xs text-slate-400 mt-0.5">{documents.length} generados</p>
-        </div>
-
-        <div className="flex-1 overflow-y-auto p-3 space-y-2">
-          {documents.length === 0 && (
-            <div className="text-center py-12 text-slate-400">
-              <FileText size={32} className="mx-auto mb-3 opacity-30" />
-              <p className="text-sm">Sin documentos aún</p>
-              <p className="text-xs mt-1">Solicita un resumen, acta o cualquier documento al chat</p>
-            </div>
-          )}
-
-          {documents.map((doc, i) => (
-            <motion.button
-              key={doc.id}
-              initial={{ opacity: 0, x: -8 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ delay: i * 0.04 }}
-              onClick={() => openDocument(doc)}
-              className={cn(
-                "w-full text-left p-3 rounded-xl border transition-all",
-                selected?.id === doc.id
-                  ? "bg-indigo-50 border-indigo-200"
-                  : "bg-white border-slate-100 hover:border-indigo-100 hover:shadow-soft"
-              )}
-            >
-              <div className="flex items-start gap-3">
-                <span className="text-lg mt-0.5">{DOC_ICONS[doc.doc_type] ?? "📄"}</span>
-                <div className="flex-1 min-w-0">
-                  <p className="font-medium text-slate-800 text-sm truncate">{doc.title}</p>
-                  <p className="text-xs text-slate-400 mt-0.5">{formatDate(doc.created_at)}</p>
-                  <p className="text-xs text-slate-500 mt-1 line-clamp-2 leading-relaxed">
-                    {doc.content.replace(/[#*\[\]`]/g, "").slice(0, 80)}…
-                  </p>
-                </div>
-              </div>
-            </motion.button>
-          ))}
+    <div className="page-content overflow-hidden flex flex-col">
+      <div className="px-8 pt-6 pb-4 flex-shrink-0">
+        <h1 className="text-2xl font-bold text-slate-900 mb-4">Documentos</h1>
+        <div className="relative">
+          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input value={query} onChange={(e) => setQuery(e.target.value)}
+            placeholder="Buscar documentos…"
+            className="w-full pl-9 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl
+                       text-sm outline-none focus:ring-2 focus:ring-violet-200 focus:border-violet-300
+                       transition-all placeholder:text-slate-400" />
         </div>
       </div>
 
-      {/* Editor de documento */}
-      <AnimatePresence mode="wait">
-        {selected ? (
-          <motion.div
-            key={selected.id}
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="flex-1 flex flex-col overflow-hidden"
-          >
-            {/* Toolbar */}
-            <div className="flex items-center gap-2 px-6 py-3 border-b border-slate-100 bg-white">
-              <span className="text-xl">{DOC_ICONS[selected.doc_type] ?? "📄"}</span>
-              <input
-                value={editTitle}
-                onChange={(e) => setEditTitle(e.target.value)}
-                className="flex-1 text-lg font-semibold text-slate-900 outline-none bg-transparent"
-              />
-
-              <div className="flex items-center gap-1 ml-auto">
-                <button
-                  onClick={() => setIsFocusMode((v) => !v)}
-                  className="p-2 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
-                  title="Modo enfoque"
-                >
-                  {isFocusMode ? <X size={16} /> : <Edit3 size={16} />}
-                </button>
-                <button
-                  onClick={() => navigator.clipboard.writeText(editContent)}
-                  className="p-2 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
-                  title="Copiar markdown"
-                >
-                  <Copy size={16} />
-                </button>
-                <button
-                  onClick={() => handleExport("docx")}
-                  className="p-2 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
-                  title="Exportar Word"
-                >
-                  <Download size={16} />
-                </button>
-                <button
-                  onClick={() => handleDelete(selected)}
-                  className="p-2 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 transition-colors"
-                  title="Eliminar"
-                >
-                  <Trash2 size={16} />
-                </button>
-                <button
-                  onClick={handleSave}
-                  disabled={isSaving}
-                  className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700
-                             text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-60"
-                >
-                  {isSaving ? (
-                    <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                  ) : (
-                    <Save size={14} />
-                  )}
-                  Guardar
-                </button>
-              </div>
-            </div>
-
-            {/* Contenido editable con BlockNote */}
-            <div className="flex-1 overflow-y-auto px-12 py-8 max-w-3xl mx-auto w-full">
-              <BlockNoteEditor
-                content={editContent}
-                onChange={setEditContent}
-                editable
-              />
-            </div>
-          </motion.div>
+      <div className="flex-1 overflow-y-auto px-8 pb-8">
+        {filtered.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-48 text-center">
+            <p className="text-4xl mb-3 opacity-30">📄</p>
+            <p className="text-slate-400 text-sm">
+              {query ? "Sin resultados" : "Genera documentos en el chat de un workspace"}
+            </p>
+          </div>
         ) : (
+          <div className="grid gap-3 grid-cols-2 lg:grid-cols-3">
+            {filtered.map((doc, i) => (
+              <motion.div key={doc.id}
+                initial={{ opacity: 0, scale: 0.97 }} animate={{ opacity: 1, scale: 1 }}
+                transition={{ delay: i * 0.05 }}
+                className="group relative bg-white rounded-2xl border border-slate-100
+                           hover:border-violet-200 hover:shadow-soft p-5 transition-all cursor-pointer"
+                onClick={() => setEditing(doc)}
+              >
+                <div className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 transition-opacity flex gap-1">
+                  {[
+                    { icon: <Copy size={12}/>, fn: (e: React.MouseEvent) => { e.stopPropagation(); handleCopy(doc); } },
+                    { icon: <Download size={12}/>, fn: (e: React.MouseEvent) => { e.stopPropagation(); handleExport(doc); } },
+                    { icon: <Trash2 size={12}/>, fn: (e: React.MouseEvent) => { e.stopPropagation(); handleDelete(doc); } },
+                  ].map(({ icon, fn }, idx) => (
+                    <button key={idx} onClick={fn}
+                      className="p-1.5 bg-white rounded-lg border border-slate-200 text-slate-400 hover:text-violet-500 shadow-soft">
+                      {icon}
+                    </button>
+                  ))}
+                </div>
+                <div className="text-2xl mb-3">📄</div>
+                <p className="font-semibold text-slate-800 text-sm mb-0.5 line-clamp-2">{doc.title}</p>
+                <p className="text-[11px] text-violet-600 font-medium mb-2">{DOC_LABELS[doc.doc_type] ?? "Documento"}</p>
+                <p className="text-xs text-slate-400 mb-3">{formatDate(doc.created_at)}</p>
+                <p className="text-[12px] text-slate-500 leading-relaxed line-clamp-3">
+                  {doc.content.replace(/[#*_\[\]`]/g, "")}
+                </p>
+              </motion.div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <AnimatePresence>
+        {editing && (
           <motion.div
-            key="empty"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            className="flex-1 flex items-center justify-center text-center text-slate-400"
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-8"
+            onClick={() => setEditing(null)}
           >
-            <div>
-              <FileText size={40} className="mx-auto mb-3 opacity-20" />
-              <p className="text-sm">Selecciona un documento para editarlo</p>
-            </div>
+            <motion.div
+              initial={{ scale: 0.96, y: 16 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.96, y: 16 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-white rounded-2xl shadow-float border border-slate-100 w-full max-w-3xl max-h-[85vh] flex flex-col"
+            >
+              <div className="flex items-center justify-between p-5 border-b border-slate-100">
+                <div>
+                  <p className="font-semibold text-slate-900">{editing.title}</p>
+                  <p className="text-xs text-violet-600 mt-0.5">{DOC_LABELS[editing.doc_type]}</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button onClick={() => handleCopy(editing)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-50 hover:bg-slate-100 text-slate-600 rounded-xl text-xs font-medium transition-colors">
+                    <Copy size={12}/> Copiar
+                  </button>
+                  <button onClick={() => handleExport(editing)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-50 hover:bg-slate-100 text-slate-600 rounded-xl text-xs font-medium transition-colors">
+                    <Download size={12}/> .md
+                  </button>
+                  <button onClick={() => setEditing(null)}
+                    className="p-1.5 hover:bg-slate-100 rounded-lg text-slate-400 transition-colors">
+                    <X size={16}/>
+                  </button>
+                </div>
+              </div>
+              <div className="flex-1 overflow-y-auto p-6">
+                <KonejoEditor
+                  content={editing.content}
+                  onChange={(html) => setEditing({ ...editing, content: html })}
+                  placeholder="Edita el documento…"
+                />
+              </div>
+            </motion.div>
           </motion.div>
         )}
       </AnimatePresence>
     </div>
   );
 }
-
-const DOC_ICONS: Record<string, string> = {
-  resumen_ejecutivo:  "📋",
-  acta:               "📄",
-  minuta:             "📝",
-  compromisos:        "✅",
-  riesgos:            "⚠️",
-  acuerdos:           "🤝",
-  proximos_pasos:     "🚀",
-  correo_seguimiento: "✉️",
-  timeline:           "📅",
-  tareas:             "☑️",
-  custom:             "📄",
-};

@@ -2,64 +2,54 @@ import { useEffect } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Toaster } from "sonner";
 
-import { Navigation } from "@/components/Navigation";
-import { OnboardingPage } from "@/pages/Onboarding";
-import { HomePage } from "@/pages/Home";
-import { WorkspacePage } from "@/pages/Workspace";
-import { DocumentsPage } from "@/pages/Documents";
-import { PromptsPage } from "@/pages/Prompts";
-import { SettingsPage } from "@/pages/Settings";
+import { Navigation }       from "@/components/Navigation";
+import { ProcessingOverlay } from "@/components/ProcessingOverlay";
+import { RecordingModal }    from "@/components/RecordingModal";
 
-import { useAppStore } from "@/store/appStore";
+import { OnboardingPage }  from "@/pages/Onboarding";
+import { HomePage }        from "@/pages/Home";
+import { WorkspacesPage }  from "@/pages/Workspaces";
+import { WorkspacePage }   from "@/pages/Workspace";
+import { DocumentsPage }   from "@/pages/Documents";
+import { PromptsPage }     from "@/pages/Prompts";
+import { SettingsPage }    from "@/pages/Settings";
+
+import { useAppStore }  from "@/store/appStore";
 import { getSettings, initializeModels, MOCK_MODE } from "@/lib/tauri";
 
-const PAGE_TRANSITION = {
-  initial:  { opacity: 0, y: 8 },
-  animate:  { opacity: 1, y: 0 },
-  exit:     { opacity: 0, y: -8 },
-  transition: { duration: 0.2, ease: "easeOut" },
-};
+const T = { initial: { opacity: 0, y: 6 }, animate: { opacity: 1, y: 0 }, exit: { opacity: 0, y: -6 }, transition: { duration: 0.2, ease: "easeOut" } };
 
 export default function App() {
-  const currentPage          = useAppStore((s) => s.currentPage);
-  const setPage              = useAppStore((s) => s.setPage);
-  const onboardingComplete   = useAppStore((s) => s.onboardingComplete);
+  const currentPage           = useAppStore((s) => s.currentPage);
+  const setPage               = useAppStore((s) => s.setPage);
+  const onboardingComplete    = useAppStore((s) => s.onboardingComplete);
   const setOnboardingComplete = useAppStore((s) => s.setOnboardingComplete);
-  const setModelsLoaded      = useAppStore((s) => s.setModelsLoaded);
+  const setModelsLoaded       = useAppStore((s) => s.setModelsLoaded);
 
-  // Inicialización al arrancar
   useEffect(() => {
     const init = async () => {
       try {
         const settings = await getSettings();
         setOnboardingComplete(settings.onboarding_complete);
+        if (!settings.onboarding_complete) { setPage("onboarding"); return; }
 
-        if (!settings.onboarding_complete) {
-          setPage("onboarding");
-          return;
-        }
-
-        // Intentar cargar modelos silenciosamente
         if (!MOCK_MODE) {
           const result = await initializeModels();
           setModelsLoaded({
-            whisper:    result.loaded.whisper ?? false,
-            llm:        result.loaded.llm ?? false,
+            whisper:    result.loaded.whisper    ?? false,
+            llm:        result.loaded.llm        ?? false,
             embeddings: result.loaded.embeddings ?? false,
           });
         } else {
-          // En mock mode, onboarding siempre completo
           setOnboardingComplete(true);
         }
       } catch (err) {
-        console.error("Error de inicialización:", err);
+        console.error("Init error:", err);
       }
     };
-
     init();
   }, []);
 
-  // Mostrar onboarding si no está completo
   if (!onboardingComplete && currentPage === "onboarding") {
     return (
       <>
@@ -70,42 +60,45 @@ export default function App() {
   }
 
   return (
-    <div className="flex flex-col h-screen overflow-hidden bg-white">
+    <div className="h-screen overflow-hidden bg-white">
       <Navigation />
 
-      <main className="flex-1 overflow-hidden">
-        <AnimatePresence mode="wait">
-          {currentPage === "home" && (
-            <motion.div key="home" {...PAGE_TRANSITION} className="h-full overflow-auto">
-              <HomePage />
-            </motion.div>
-          )}
+      <AnimatePresence mode="wait">
+        {currentPage === "home" && (
+          <motion.div key="home" {...T} className="h-screen">
+            <HomePage />
+          </motion.div>
+        )}
+        {currentPage === "workspaces" && (
+          <motion.div key="workspaces" {...T} className="h-screen">
+            <WorkspacesPage />
+          </motion.div>
+        )}
+        {currentPage === "workspace" && (
+          <motion.div key="workspace" {...T} className="h-screen">
+            <WorkspacePage />
+          </motion.div>
+        )}
+        {currentPage === "documents" && (
+          <motion.div key="documents" {...T} className="h-screen">
+            <DocumentsPage />
+          </motion.div>
+        )}
+        {currentPage === "prompts" && (
+          <motion.div key="prompts" {...T} className="h-screen">
+            <PromptsPage />
+          </motion.div>
+        )}
+        {currentPage === "settings" && (
+          <motion.div key="settings" {...T} className="h-screen">
+            <SettingsPage />
+          </motion.div>
+        )}
+      </AnimatePresence>
 
-          {currentPage === "workspace" && (
-            <motion.div key="workspace" {...PAGE_TRANSITION} className="h-full">
-              <WorkspacePage />
-            </motion.div>
-          )}
-
-          {currentPage === "documents" && (
-            <motion.div key="documents" {...PAGE_TRANSITION} className="h-full">
-              <DocumentsPage />
-            </motion.div>
-          )}
-
-          {currentPage === "prompts" && (
-            <motion.div key="prompts" {...PAGE_TRANSITION} className="h-full overflow-auto">
-              <PromptsPage />
-            </motion.div>
-          )}
-
-          {currentPage === "settings" && (
-            <motion.div key="settings" {...PAGE_TRANSITION} className="h-full overflow-auto">
-              <SettingsPage />
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </main>
+      {/* Global overlays */}
+      <ProcessingOverlay />
+      <RecordingModal />
 
       <Toaster position="bottom-right" richColors />
     </div>

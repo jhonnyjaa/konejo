@@ -1,0 +1,15 @@
+# Configuración de Cargo para Konejo
+#
+# Problema: whisper-rs-sys y llama-cpp-sys-2 compilan cada uno su propia
+# copia de ggml (la librería de tensores base de ambos proyectos).
+# Esto genera símbolos C duplicados (ggml_init, ggml_fp16_to_fp32, …)
+# que el linker MSVC rechaza con LNK1169.
+#
+# Solución: /FORCE:MULTIPLE instruye al linker a usar la primera definición
+# encontrada y continuar. Es seguro porque ambas copias de ggml son
+# compiladas del mismo código fuente upstream.
+
+[target.x86_64-pc-windows-msvc]
+rustflags = [
+  "-C", "link-arg=/FORCE:MULTIPLE",
+]

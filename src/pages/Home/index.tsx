@@ -1,342 +1,268 @@
 import { useEffect, useState, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Upload, Mic, MicOff, Clock, FolderOpen, ChevronRight, AlertCircle } from "lucide-react";
+import { Upload, Mic, ChevronRight, Clock, Users, FileText, AlertCircle } from "lucide-react";
+import { toast } from "sonner";
+import { open } from "@tauri-apps/plugin-dialog";
 import { useAppStore } from "@/store/appStore";
 import { useWorkspaceStore } from "@/store/workspaceStore";
-import {
-  getWorkspaces, importFile, startRecording, stopRecording,
-  onProcessingProgress, onProcessingComplete, onProcessingError,
-  deleteWorkspace, MOCK_MODE,
-} from "@/lib/tauri";
-import { open } from "@tauri-apps/plugin-dialog";
-import { formatDate as _formatDate, formatDuration as _formatDuration, cn } from "@/lib/utils";
-import type { Workspace } from "@/types";
+import { getWorkspaces, importFile, startRecording, MOCK_MODE } from "@/lib/tauri";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
+import { formatDate, formatDuration, groupByDate, cn } from "@/lib/utils";
+import type { Workspace, ProcessingEvent } from "@/types";
 
 export function HomePage() {
-  const setPage            = useAppStore((s) => s.setPage);
-  const setActiveWorkspace = useAppStore((s) => s.setActiveWorkspaceId);
-  const isProcessing       = useAppStore((s) => s.isProcessing);
-  const processingProgress = useAppStore((s) => s.processingProgress);
-  const processingMessage  = useAppStore((s) => s.processingMessage);
-  const setProcessingEvent = useAppStore((s) => s.setProcessingEvent);
-  const clearProcessing    = useAppStore((s) => s.clearProcessing);
-  const isRecording        = useAppStore((s) => s.isRecording);
-  const setRecording       = useAppStore((s) => s.setRecording);
+  const setPage             = useAppStore((s) => s.setPage);
+  const setActiveWorkspace  = useAppStore((s) => s.setActiveWorkspaceId);
+  const setProcessingEvent  = useAppStore((s) => s.setProcessingEvent);
+  const clearProcessing     = useAppStore((s) => s.clearProcessing);
+  const setRecordingState   = useAppStore((s) => s.setRecordingState);
 
   const workspaces    = useWorkspaceStore((s) => s.workspaces);
   const setWorkspaces = useWorkspaceStore((s) => s.setWorkspaces);
   const updateWs      = useWorkspaceStore((s) => s.updateWorkspace);
 
   const [isDragging, setIsDragging] = useState(false);
-  const [processingName, setProcessingName] = useState<string | null>(null);
-  const dragCounter = useRef(0);
+  const dragCnt = useRef(0);
 
-  // Cargar workspaces
   useEffect(() => {
     getWorkspaces().then(setWorkspaces).catch(console.error);
   }, []);
 
-  // Eventos de procesamiento
-  useTauriEvent<{ stage: string; progress: number; message: string }>(
-    "processing-progress",
-    (e) => {
-      setProcessingEvent(e.payload as any, "");
-    }
-  );
-
+  useTauriEvent<ProcessingEvent>("processing-progress", (e) => {
+    setProcessingEvent(e.payload, "");
+  });
   useTauriEvent<string>("processing-complete", (e) => {
     clearProcessing();
-    const id = e.payload;
-    updateWs(id, { status: "ready" });
+    updateWs(e.payload, { status: "ready" });
     getWorkspaces().then(setWorkspaces).catch(console.error);
   });
-
   useTauriEvent<string>("processing-error", (e) => {
     clearProcessing();
-    console.error("Processing error:", e.payload);
+    toast.error("Error procesando archivo", { description: String(e.payload) });
   });
 
-  const handleImportFile = async (filePath?: string) => {
+  const handleImport = async (filePath?: string) => {
     try {
       let path = filePath;
       if (!path) {
         if (MOCK_MODE) {
-          path = "C:\\Users\\user\\reuniones\\ejemplo.mp4";
+          path = "C:\\reuniones\\ejemplo.mp4";
         } else {
           const result = await open({
             multiple: false,
-            filters: [{ name: "Audio/Video", extensions: ["mp4", "mkv", "mov", "wav", "mp3", "m4a", "ogg", "flac", "webm", "avi"] }],
+            filters: [{ name: "Audio / Video", extensions: ["mp4","mkv","mov","avi","webm","mp3","wav","m4a","ogg","flac"] }],
           });
           if (!result) return;
           path = result as string;
         }
       }
-      const name = path.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, "") ?? "Reunión";
-      setProcessingName(name);
       await importFile(path);
-      await getWorkspaces().then(setWorkspaces);
+      const ws = await getWorkspaces();
+      setWorkspaces(ws);
     } catch (err) {
-      console.error("Error importando archivo:", err);
+      toast.error("No se pudo importar el archivo", { description: String(err) });
     }
   };
 
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-    dragCounter.current = 0;
-    const file = e.dataTransfer.files[0];
-    if (file) handleImportFile(file.path as string);
-  };
-
-  const handleRecording = async () => {
-    if (isRecording) {
-      setRecording(false);
-      const wsId = await stopRecording();
-      await getWorkspaces().then(setWorkspaces);
-    } else {
+  const handleRecord = async () => {
+    try {
       await startRecording();
-      setRecording(true);
+      setRecordingState("recording");
+    } catch (err) {
+      toast.error("No se pudo iniciar la grabación", { description: String(err) });
     }
   };
 
   const openWorkspace = (ws: Workspace) => {
+    if (ws.status !== "ready") return;
     setActiveWorkspace(ws.id);
     setPage("workspace");
   };
 
-  const recentWorkspaces = workspaces.slice(0, 8);
+  const groups = groupByDate(workspaces, (w) => w.created_at);
+  const hasWorkspaces = workspaces.length > 0;
 
   return (
     <div
-      className="min-h-screen bg-slate-25 pt-20 px-8 pb-8"
-      onDragEnter={(e) => { e.preventDefault(); dragCounter.current++; setIsDragging(true); }}
-      onDragLeave={(e) => { e.preventDefault(); dragCounter.current--; if (dragCounter.current === 0) setIsDragging(false); }}
+      className="page-content overflow-y-auto"
+      onDragEnter={(e) => { e.preventDefault(); dragCnt.current++; setIsDragging(true); }}
+      onDragLeave={(e) => { e.preventDefault(); dragCnt.current--; if (dragCnt.current === 0) setIsDragging(false); }}
       onDragOver={(e) => e.preventDefault()}
-      onDrop={handleDrop}
+      onDrop={(e) => {
+        e.preventDefault(); setIsDragging(false); dragCnt.current = 0;
+        const f = e.dataTransfer.files[0];
+        if (f) handleImport((f as File & { path?: string }).path ?? f.name);
+      }}
     >
-      {/* Drop overlay */}
       <AnimatePresence>
         {isDragging && (
           <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
             className="drop-overlay"
           >
             <div className="text-center">
-              <div className="text-6xl mb-4">📂</div>
-              <p className="text-2xl font-semibold text-indigo-700">Suelta para importar</p>
-              <p className="text-indigo-500 text-sm mt-1">Audio o video de la reunión</p>
+              <div className="text-5xl mb-4">📂</div>
+              <p className="text-xl font-semibold text-violet-700">Suelta para importar</p>
+              <p className="text-sm text-violet-400 mt-1">Audio o video de la reunión</p>
             </div>
           </motion.div>
         )}
       </AnimatePresence>
 
-      {/* Processing banner */}
-      <AnimatePresence>
-        {isProcessing && (
-          <motion.div
-            initial={{ opacity: 0, y: -10 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -10 }}
-            className="fixed top-16 left-1/2 -translate-x-1/2 z-40
-                       bg-white rounded-2xl shadow-medium border border-indigo-100
-                       px-5 py-3 flex items-center gap-4 min-w-80"
-          >
-            <div className="w-8 h-8 rounded-xl bg-indigo-50 flex items-center justify-center text-lg flex-shrink-0">
-              🔄
-            </div>
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-slate-800 truncate">
-                {processingMessage || "Procesando…"}
-              </p>
-              <div className="mt-1.5 h-1 bg-slate-100 rounded-full overflow-hidden">
-                <motion.div
-                  className="h-full bg-indigo-500 rounded-full"
-                  animate={{ width: `${Math.round(processingProgress * 100)}%` }}
-                  transition={{ duration: 0.4 }}
-                />
-              </div>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      <div className="max-w-4xl mx-auto">
-        {/* Header */}
+      {/* Hero */}
+      <div className={cn(
+        "flex flex-col items-center px-8 w-full",
+        hasWorkspaces ? "pt-16 pb-12" : "flex-1 justify-center py-0"
+      )}>
         <motion.div
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
-          className="mb-10"
+          transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
+          className="text-center mb-10"
         >
-          <h1 className="text-3xl font-bold text-slate-900 mb-1">
-            Buenos días 👋
+          <h1 className="text-3xl font-bold text-slate-900 tracking-tight mb-2">
+            Start with a meeting
           </h1>
-          <p className="text-slate-500">¿Qué reunión quieres analizar hoy?</p>
+          <p className="text-slate-400 text-[15px] max-w-xs mx-auto">
+            Import or record a meeting to create an AI workspace
+          </p>
         </motion.div>
 
-        {/* Acciones principales */}
-        <div className="grid grid-cols-2 gap-4 mb-10">
-          <motion.button
-            initial={{ opacity: 0, y: 12 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.05 }}
-            whileHover={{ y: -2 }}
-            whileTap={{ scale: 0.98 }}
-            onClick={() => handleImportFile()}
-            className="flex flex-col items-center justify-center gap-3
-                       bg-white rounded-2xl border border-slate-200 shadow-soft
-                       p-8 hover:border-indigo-200 hover:shadow-medium transition-all group"
-          >
-            <div className="w-14 h-14 bg-indigo-50 group-hover:bg-indigo-100
-                            rounded-2xl flex items-center justify-center transition-colors">
-              <Upload size={24} className="text-indigo-500" />
-            </div>
-            <div className="text-center">
-              <p className="font-semibold text-slate-800">Importar archivo</p>
-              <p className="text-slate-500 text-sm mt-0.5">MP4, MKV, WAV, MP3…</p>
-            </div>
-          </motion.button>
-
-          <motion.button
-            initial={{ opacity: 0, y: 12 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.1 }}
-            whileHover={{ y: -2 }}
-            whileTap={{ scale: 0.98 }}
-            onClick={handleRecording}
-            className={`flex flex-col items-center justify-center gap-3
-                        bg-white rounded-2xl border shadow-soft p-8
-                        hover:shadow-medium transition-all group
-                        ${isRecording
-                          ? "border-red-200 bg-red-50"
-                          : "border-slate-200 hover:border-red-200"
-                        }`}
-          >
-            <div className={`w-14 h-14 rounded-2xl flex items-center justify-center transition-colors
-                             ${isRecording ? "bg-red-100" : "bg-slate-50 group-hover:bg-red-50"}`}>
-              {isRecording ? (
-                <motion.div animate={{ scale: [1, 1.2, 1] }} transition={{ repeat: Infinity, duration: 1 }}>
-                  <MicOff size={24} className="text-red-500" />
-                </motion.div>
-              ) : (
-                <Mic size={24} className="text-slate-500 group-hover:text-red-400 transition-colors" />
+        {/* Action cards */}
+        <div className="flex gap-4 w-full max-w-xl justify-center">
+          {[
+            {
+              delay: 0.06, label: "Import file", sub: "MP4, MKV, WAV, MP3…",
+              icon: <Upload size={24} className="text-violet-500" />,
+              bg: "group-hover:bg-violet-100", ibg: "bg-violet-50",
+              border: "hover:border-violet-300",
+              onClick: () => handleImport(),
+            },
+            {
+              delay: 0.12, label: "Record meeting", sub: "From microphone",
+              icon: <Mic size={24} className="text-slate-400 group-hover:text-red-400 transition-colors" />,
+              bg: "group-hover:bg-red-50", ibg: "bg-slate-50",
+              border: "hover:border-red-200",
+              onClick: handleRecord,
+            },
+          ].map((card) => (
+            <motion.button
+              key={card.label}
+              initial={{ opacity: 0, y: 14 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: card.delay, duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
+              whileHover={{ y: -4 }}
+              whileTap={{ scale: 0.97 }}
+              onClick={card.onClick}
+              className={cn(
+                "group flex-1 flex flex-col items-center justify-center gap-4",
+                "bg-white rounded-2xl border-2 border-dashed border-slate-200",
+                "shadow-soft px-8 py-10 transition-all duration-200 cursor-pointer",
+                card.border
               )}
-            </div>
-            <div className="text-center">
-              <p className="font-semibold text-slate-800">
-                {isRecording ? "Detener grabación" : "Grabar reunión"}
-              </p>
-              <p className="text-slate-500 text-sm mt-0.5">
-                {isRecording ? "Haz clic para finalizar" : "Desde el micrófono"}
-              </p>
-            </div>
-          </motion.button>
+            >
+              <div className={cn("w-14 h-14 rounded-2xl flex items-center justify-center transition-colors", card.ibg, card.bg)}>
+                {card.icon}
+              </div>
+              <div className="text-center">
+                <p className="font-semibold text-slate-800 text-[15px]">{card.label}</p>
+                <p className="text-slate-400 text-sm mt-0.5">{card.sub}</p>
+              </div>
+            </motion.button>
+          ))}
         </div>
-
-        {/* Workspaces recientes */}
-        {recentWorkspaces.length > 0 && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ delay: 0.15 }}
-          >
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold text-slate-800">Reuniones recientes</h2>
-              {workspaces.length > 8 && (
-                <button
-                  onClick={() => setPage("workspace")}
-                  className="text-indigo-600 text-sm font-medium hover:text-indigo-700 flex items-center gap-1"
-                >
-                  Ver todas <ChevronRight size={14} />
-                </button>
-              )}
-            </div>
-
-            <div className="grid gap-2">
-              {recentWorkspaces.map((ws, i) => (
-                <WorkspaceCard
-                  key={ws.id}
-                  workspace={ws}
-                  delay={i * 0.04}
-                  onClick={() => ws.status === "ready" && openWorkspace(ws)}
-                />
-              ))}
-            </div>
-          </motion.div>
-        )}
-
-        {workspaces.length === 0 && !isProcessing && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ delay: 0.2 }}
-            className="text-center py-16 text-slate-400"
-          >
-            <div className="text-5xl mb-4 opacity-50">🐰</div>
-            <p className="text-slate-500 font-medium mb-1">Sin reuniones aún</p>
-            <p className="text-sm">Importa un archivo o graba tu primera reunión</p>
-          </motion.div>
-        )}
       </div>
+
+      {/* Recent workspaces */}
+      {hasWorkspaces && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: 0.2 }}
+          className="px-8 pb-12 max-w-2xl w-full mx-auto"
+        >
+          {Object.entries(groups).map(([label, wsList]) => (
+            <div key={label} className="mb-6">
+              <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-3">
+                {label}
+              </p>
+              <div className="space-y-2">
+                {wsList.slice(0, 6).map((ws, i) => (
+                  <WorkspaceCard key={ws.id} ws={ws} delay={i * 0.04} onClick={() => openWorkspace(ws)} />
+                ))}
+              </div>
+            </div>
+          ))}
+
+          {workspaces.length > 6 && (
+            <button
+              onClick={() => setPage("workspaces")}
+              className="flex items-center gap-1.5 text-violet-600 text-sm font-medium
+                         hover:text-violet-700 transition-colors mt-2"
+            >
+              Ver todos los workspaces <ChevronRight size={14} />
+            </button>
+          )}
+        </motion.div>
+      )}
     </div>
   );
 }
 
-function WorkspaceCard({
-  workspace: ws,
-  delay,
-  onClick,
-}: { workspace: Workspace; delay: number; onClick: () => void }) {
-  const isReady      = ws.status === "ready";
-  const isProcessing = ws.status === "processing";
-  const isError      = ws.status === "error";
+// ── Workspace card ─────────────────────────────────────────────────────────────
+
+function WorkspaceCard({ ws, delay, onClick }: { ws: Workspace; delay: number; onClick: () => void }) {
+  const ready  = ws.status === "ready";
+  const busy   = ws.status === "processing";
+  const err    = ws.status === "error";
 
   return (
     <motion.div
-      initial={{ opacity: 0, x: -8 }}
+      initial={{ opacity: 0, x: -6 }}
       animate={{ opacity: 1, x: 0 }}
       transition={{ delay }}
       onClick={onClick}
-      className={`flex items-center gap-4 bg-white rounded-xl border p-4
-                  transition-all duration-200
-                  ${isReady
-                    ? "border-slate-200 hover:border-indigo-200 hover:shadow-soft cursor-pointer"
-                    : "border-slate-100 cursor-default"
-                  }`}
+      className={cn(
+        "flex items-center gap-3 bg-white rounded-xl border p-3.5 transition-all duration-200",
+        ready ? "border-slate-100 hover:border-violet-200 hover:shadow-soft cursor-pointer"
+               : "border-slate-100 cursor-default"
+      )}
     >
-      <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-lg flex-shrink-0
-                       ${isReady ? "bg-indigo-50" : isProcessing ? "bg-amber-50" : "bg-red-50"}`}>
-        {isReady ? "📋" : isProcessing ? (
-          <motion.span animate={{ rotate: 360 }} transition={{ duration: 1, repeat: Infinity, ease: "linear" }}>
-            ⚙️
-          </motion.span>
+      <div className={cn(
+        "w-9 h-9 rounded-xl flex items-center justify-center text-base flex-shrink-0",
+        ready ? "bg-violet-50" : busy ? "bg-amber-50" : "bg-red-50"
+      )}>
+        {ready ? "📋" : busy ? (
+          <motion.span animate={{ rotate: 360 }} transition={{ duration: 1.5, repeat: Infinity, ease: "linear" }}>⚙️</motion.span>
         ) : "⚠️"}
       </div>
 
       <div className="flex-1 min-w-0">
-        <p className="font-medium text-slate-800 truncate">{ws.name}</p>
-        <div className="flex items-center gap-3 mt-0.5">
-          <span className="text-slate-400 text-xs">{_formatDate(ws.created_at)}</span>
+        <p className="font-medium text-slate-800 truncate text-sm">{ws.name}</p>
+        <div className="flex items-center gap-2.5 mt-0.5 flex-wrap">
+          <span className="text-slate-400 text-xs">{formatDate(ws.created_at)}</span>
           {ws.duration_seconds !== null && (
             <>
-              <span className="text-slate-200">·</span>
-              <span className="text-slate-400 text-xs">{_formatDuration(ws.duration_seconds)}</span>
+              <span className="text-slate-200 text-xs">·</span>
+              <span className="flex items-center gap-1 text-xs text-slate-400">
+                <Clock size={10} /> {formatDuration(ws.duration_seconds)}
+              </span>
             </>
           )}
-          {isProcessing && (
-            <span className="text-amber-500 text-xs font-medium">Procesando…</span>
+          {ws.participant_count !== null && (
+            <>
+              <span className="text-slate-200 text-xs">·</span>
+              <span className="flex items-center gap-1 text-xs text-slate-400">
+                <Users size={10} /> {ws.participant_count}p
+              </span>
+            </>
           )}
-          {isError && (
-            <span className="text-red-400 text-xs font-medium flex items-center gap-1">
-              <AlertCircle size={11} /> Error
-            </span>
-          )}
+          {busy && <span className="text-amber-500 text-xs font-medium">Procesando…</span>}
+          {err  && <span className="flex items-center gap-1 text-red-400 text-xs"><AlertCircle size={10}/>Error</span>}
         </div>
       </div>
 
-      {isReady && <ChevronRight size={16} className="text-slate-300 flex-shrink-0" />}
+      {ready && <ChevronRight size={14} className="text-slate-300 flex-shrink-0" />}
     </motion.div>
   );
 }

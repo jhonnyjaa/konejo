@@ -1,49 +1,28 @@
-/**
- * Capa de abstracción sobre Tauri commands.
- * En MOCK_MODE, todas las llamadas van a mockInvoke().
- */
-
+/// <reference types="vite/client" />
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { listen, type EventCallback, type UnlistenFn } from "@tauri-apps/api/event";
-import { mockInvoke } from "@/mock";
+import { mockInvoke, mockListen } from "@/services/mock";
 
 export const MOCK_MODE = import.meta.env.VITE_MOCK_MODE === "true";
-
-// ── Invoke ────────────────────────────────────────────────────────────────────
 
 export async function invoke<T = unknown>(
   command: string,
   args?: Record<string, unknown>
 ): Promise<T> {
-  if (MOCK_MODE) {
-    return mockInvoke(command, args) as Promise<T>;
-  }
+  if (MOCK_MODE) return mockInvoke(command, args) as Promise<T>;
   return tauriInvoke<T>(command, args);
 }
-
-// ── Event listener ────────────────────────────────────────────────────────────
 
 export function onEvent<T>(
   event: string,
   callback: EventCallback<T>
 ): Promise<UnlistenFn> {
-  if (MOCK_MODE) {
-    // En mock mode, escuchamos en window CustomEvents
-    const handler = (e: Event) => {
-      const ce = e as CustomEvent;
-      callback({ event, id: 0, windowLabel: "main", payload: ce.detail } as Parameters<EventCallback<T>>[0]);
-    };
-    const mockEvent = `tauri://${event}`;
-    window.addEventListener(mockEvent, handler);
-    return Promise.resolve(() => window.removeEventListener(mockEvent, handler));
-  }
+  if (MOCK_MODE) return mockListen<T>(event, callback);
   return listen<T>(event, callback);
 }
 
-// ── Imports específicos para conveniencia ─────────────────────────────────────
-
 import type {
-  Workspace, Conversation, Message, Document as KDoc,
+  Workspace, Conversation, Message, Document,
   AppSettings, ProcessingEvent, TokenEvent,
 } from "@/types";
 
@@ -56,10 +35,10 @@ export const checkModelsExist = () => invoke<{ whisper: boolean; llm: boolean; w
 export const initializeModels = () => invoke<{ loaded: Record<string, boolean>; errors: string[] }>("initialize_models");
 
 // Documents
-export const getDocuments    = (workspace_id: string) => invoke<KDoc[]>("get_documents", { workspace_id });
-export const saveDocument    = (id: string, title: string, content: string) => invoke<void>("save_document", { id, title, content });
-export const deleteDocument  = (id: string) => invoke<void>("delete_document", { id });
-export const exportDocument  = (document_id: string, format: string, output_path: string) =>
+export const getDocuments   = (workspace_id: string) => invoke<Document[]>("get_documents", { workspace_id });
+export const saveDocument   = (id: string, title: string, content: string) => invoke<void>("save_document", { id, title, content });
+export const deleteDocument = (id: string) => invoke<void>("delete_document", { id });
+export const exportDocument = (document_id: string, format: string, output_path: string) =>
   invoke<void>("export_document", { document_id, format, output_path });
 
 // Conversations & Chat
@@ -75,21 +54,15 @@ export const stopRecording      = (name?: string) => invoke<string>("stop_record
 export const getRecordingStatus = () => invoke<boolean>("get_recording_status");
 
 // Settings
-export const getSettings              = () => invoke<AppSettings>("get_settings");
-export const saveSettings             = (settings: AppSettings) => invoke<void>("save_settings", { settings });
-export const markOnboardingComplete   = () => invoke<void>("mark_onboarding_complete");
-export const getModelsDir             = () => invoke<string>("get_models_dir");
+export const getSettings            = () => invoke<AppSettings>("get_settings");
+export const saveSettings           = (settings: AppSettings) => invoke<void>("save_settings", { settings });
+export const markOnboardingComplete = () => invoke<void>("mark_onboarding_complete");
+export const getModelsDir           = () => invoke<string>("get_models_dir");
 
-// Event listeners tipados
-export const onProcessingProgress = (cb: EventCallback<ProcessingEvent>) =>
-  onEvent<ProcessingEvent>("processing-progress", cb);
-export const onProcessingComplete = (cb: EventCallback<string>) =>
-  onEvent<string>("processing-complete", cb);
-export const onProcessingError    = (cb: EventCallback<string>) =>
-  onEvent<string>("processing-error", cb);
-export const onTokenStream        = (cb: EventCallback<TokenEvent>) =>
-  onEvent<TokenEvent>("token-stream", cb);
-export const onTranscriptionProgress = (cb: EventCallback<number>) =>
-  onEvent<number>("transcription-progress", cb);
-export const onDocumentCreated    = (cb: EventCallback<KDoc>) =>
-  onEvent<KDoc>("document-created", cb);
+// Typed event helpers
+export const onProcessingProgress = (cb: EventCallback<ProcessingEvent>) => onEvent<ProcessingEvent>("processing-progress", cb);
+export const onProcessingComplete = (cb: EventCallback<string>) => onEvent<string>("processing-complete", cb);
+export const onProcessingError    = (cb: EventCallback<string>) => onEvent<string>("processing-error", cb);
+export const onTokenStream        = (cb: EventCallback<TokenEvent>) => onEvent<TokenEvent>("token-stream", cb);
+export const onTranscriptionProgress = (cb: EventCallback<number>) => onEvent<number>("transcription-progress", cb);
+export const onDocumentCreated    = (cb: EventCallback<Document>) => onEvent<Document>("document-created", cb);

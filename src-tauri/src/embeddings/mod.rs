@@ -19,7 +19,8 @@ pub fn load_embeddings(cache_dir: PathBuf) -> AppResult<TextEmbedding> {
 }
 
 /// Genera embeddings para indexación (prefijo "passage:").
-pub fn embed_passages(model: &TextEmbedding, texts: &[String]) -> AppResult<Vec<Vec<f32>>> {
+/// fastembed 5.x requiere &mut TextEmbedding en embed().
+pub fn embed_passages(model: &mut TextEmbedding, texts: &[String]) -> AppResult<Vec<Vec<f32>>> {
     let prefixed: Vec<String> = texts.iter()
         .map(|t| format!("passage: {t}"))
         .collect();
@@ -29,7 +30,8 @@ pub fn embed_passages(model: &TextEmbedding, texts: &[String]) -> AppResult<Vec<
 }
 
 /// Genera embedding para query de búsqueda (prefijo "query:").
-pub fn embed_query(model: &TextEmbedding, query: &str) -> AppResult<Vec<f32>> {
+/// fastembed 5.x requiere &mut TextEmbedding en embed().
+pub fn embed_query(model: &mut TextEmbedding, query: &str) -> AppResult<Vec<f32>> {
     let prefixed = vec![format!("query: {query}")];
     let mut results = model
         .embed(prefixed, None)

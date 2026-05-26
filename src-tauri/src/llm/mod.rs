@@ -8,7 +8,6 @@ use llama_cpp_2::{
     llama_backend::LlamaBackend,
     llama_batch::LlamaBatch,
     model::{params::LlamaModelParams, AddBos, LlamaModel, Special},
-    token::data_array::LlamaTokenDataArray,
 };
 
 /// Carga el modelo GGUF desde disco y devuelve un LlmInstance.
@@ -42,19 +41,21 @@ pub fn num_threads() -> i32 {
 
 /// Genera texto con streaming de tokens vía callback.
 /// `on_token` recibe cada token string y devuelve `false` para detener.
+/// Usa decodificación greedy (argmax de logits) para salida determinista.
 pub fn generate_streaming<F>(
     instance: &LlmInstance,
     prompt: &str,
-    temperature: f32,
-    repeat_penalty: f32,
+    _temperature: f32,    // reservado – greedy es determinista
+    _repeat_penalty: f32, // reservado – implementación futura con LlamaSampler
     max_tokens: u32,
     mut on_token: F,
 ) -> AppResult<String>
 where
     F: FnMut(&str) -> bool,
 {
+    // with_n_ctx espera Option<NonZeroU32> en llama-cpp-2 0.1.x
     let ctx_params = LlamaContextParams::default()
-        .with_n_ctx(NonZeroU32::new(instance.n_ctx).unwrap())
+        .with_n_ctx(NonZeroU32::new(instance.n_ctx))
         .with_n_threads(instance.n_threads)
         .with_n_threads_batch(instance.n_threads);
 
@@ -94,53 +95,39 @@ where
 
     let mut n_cur = tokens.len() as i32;
     let mut output = String::new();
-    let mut last_tokens: Vec<llama_cpp_2::token::LlamaToken> = tokens.clone();
+    let max_pos = (tokens.len() + max_tokens as usize) as i32;
 
     loop {
-        if n_cur >= (tokens.len() + max_tokens as usize) as i32 { break; }
+        if n_cur >= max_pos { break; }
 
-        // Muestrear siguiente token
-        let candidates = ctx
+        // Muestrear siguiente token: greedy argmax sobre logits
+        // candidates_ith devuelve un iterador de LlamaTokenData con .id() y .logit()
+        let new_token = ctx
             .candidates_ith(batch.n_tokens() - 1)
-            .collect::<Vec<_>>();
-        let mut candidates_p = LlamaTokenDataArray::from_iter(candidates, false);
-
-        // Penalización por repetición
-        ctx.sample_repetition_penalties(
-            &mut candidates_p,
-            &last_tokens,
-            64,            // ventana de contexto para penalización
-            repeat_penalty,
-            0.0, // alpha_frequency
-            0.0, // alpha_presence
-        );
-
-        // Temperatura
-        ctx.sample_temp(&mut candidates_p, temperature);
-
-        // Muestreo top-p + top-k
-        ctx.sample_top_k(&mut candidates_p, 40, 1);
-        ctx.sample_top_p(&mut candidates_p, 0.95, 1);
-
-        let new_token = ctx.sample_token_greedy(&mut candidates_p);
+            .max_by(|a, b| {
+                a.logit().partial_cmp(&b.logit()).unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|d| d.id())
+            .ok_or_else(|| AppError::Inference("Sin candidatos de tokens".into()))?;
 
         // Fin de secuencia
         if new_token == instance.model.token_eos() {
             break;
         }
 
-        // Convertir a string
+        // token_to_str está deprecado pero es la API más simple en 0.1.x.
+        // token_to_piece requiere &mut encoding_rs::Decoder como tercer argumento.
+        #[allow(deprecated)]
         let token_str = instance.model
             .token_to_str(new_token, Special::Tokenize)
             .unwrap_or_default();
 
         output.push_str(&token_str);
-        last_tokens.push(new_token);
 
         // Callback al consumidor — si devuelve false, detener
         if !on_token(&token_str) { break; }
 
-        // Siguiente batch
+        // Siguiente batch con el token recién generado
         batch.clear();
         batch
             .add(new_token, n_cur, &[0], true)

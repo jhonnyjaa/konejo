@@ -40,8 +40,7 @@
   },
   "plugins": {
     "shell": {
-      "open": true,
-      "execute": true
+      "open": true
     }
   }
 }
